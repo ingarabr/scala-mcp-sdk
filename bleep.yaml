@@ -1,0 +1,74 @@
+$schema: https://raw.githubusercontent.com/oyvindberg/bleep/master/schema.json
+$version: 0.0.12
+jvm:
+  name: graalvm-community:24.0.0
+projects:
+  schemas:
+#    folder: ./schemas
+    extends: template-main
+    dependencies:
+      - io.circe::circe-core:0.14.10
+      - io.circe::circe-generic:0.14.10
+      - io.circe::circe-parser:0.14.10
+
+  schemas-test:
+#    folder: ./schemas-test
+    extends: template-test
+    dependsOn: schemas
+    dependencies:
+      - org.scalameta::munit:1.1.0
+      - org.typelevel::munit-cats-effect:2.0.0
+
+  server:
+#    folder: ./server
+    extends: template-main
+    dependsOn: schemas
+    dependencies:
+      - org.typelevel::cats-effect:3.5.7
+      - co.fs2::fs2-core:3.11.0
+      - co.fs2::fs2-io:3.11.0
+
+  server-test:
+#    folder: ./server-test
+    extends: template-test
+    dependsOn: server
+    dependencies:
+      - org.scalameta::munit:1.1.0
+      - org.typelevel::munit-cats-effect:2.0.0
+
+  examples:
+#    folder: ./examples
+    extends: template-main
+    dependsOn: server
+    platform:
+      mainClass: examples.SimpleServer
+
+templates:
+  template-common:
+    platform:
+      name: jvm
+    scala:
+      version: 3.3.4
+      options:
+        - -Xmax-inlines:64
+        - -Wunused:all
+        - -Wvalue-discard
+        - -deprecation
+        - -feature
+        - -unchecked
+        - -new-syntax
+        - -source:3.3
+        - -no-indent
+      strict: true
+
+  template-main:
+    extends: template-common
+    scala:
+      options:
+        - -Ycheck-all-patmat
+
+  template-test:
+    extends: template-common
+    isTestProject: true
+    scala:
+      strict: false

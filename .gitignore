@@ -3,4 +3,5 @@ claude.md
 target/
 .bsp/
 .bloop/
+.bleep/
 .idea/
