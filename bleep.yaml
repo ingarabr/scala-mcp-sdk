@@ -36,10 +36,33 @@ projects:
       - org.scalameta::munit:1.1.0
       - org.typelevel::munit-cats-effect:2.0.0
 
+  server-http4s:
+#    folder: ./server-http4s
+    extends: template-main
+    dependsOn: server
+    dependencies:
+      - org.http4s::http4s-dsl:0.23.27
+      - org.http4s::http4s-circe:0.23.27
+
+  server-http4s-test:
+#    folder: ./server-http4s-test
+    extends: template-test
+    dependsOn: server-http4s
+    dependencies:
+      - org.scalameta::munit:1.1.0
+      - org.typelevel::munit-cats-effect:2.0.0
+      - org.http4s::http4s-ember-server:0.23.27
+      - org.http4s::http4s-ember-client:0.23.27
+
   examples:
 #    folder: ./examples
     extends: template-main
-    dependsOn: server
+    dependsOn:
+      - server
+      - server-http4s
+    dependencies:
+      - org.http4s::http4s-ember-server:0.23.27
+      - org.http4s::http4s-server:0.23.27
     platform:
       mainClass: examples.SimpleServer
 
