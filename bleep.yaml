@@ -43,6 +43,14 @@ projects:
     platform:
       mainClass: examples.SimpleServer
 
+  examples-test:
+#    folder: ./examples-test
+    extends: template-test
+    dependsOn: examples
+    dependencies:
+      - org.scalameta::munit:1.1.0
+      - org.typelevel::munit-cats-effect:2.0.0
+
 templates:
   template-common:
     platform:
