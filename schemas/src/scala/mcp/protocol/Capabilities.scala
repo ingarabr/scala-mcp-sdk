@@ -12,7 +12,9 @@ case class ClientCapabilities(
     /** Present if the client supports listing roots. */
     roots: Option[RootsCapability] = None,
     /** Present if the client supports sampling from an LLM. */
-    sampling: Option[JsonObject] = None
+    sampling: Option[JsonObject] = None,
+    /** Present if the client supports elicitation from the server. */
+    elicitation: Option[JsonObject] = None
 ) derives Codec.AsObject
 
 /** Capability for roots listing support.

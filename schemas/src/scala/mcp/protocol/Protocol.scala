@@ -4,12 +4,12 @@ import io.circe.*
 import io.circe.generic.semiauto.*
 
 /** The role of a message sender or recipient. */
-enum Role derives Codec.AsObject {
+enum Role derives EnumCodec {
   case user, assistant
 }
 
 /** Logging levels for diagnostic messages. */
-enum LoggingLevel derives Codec.AsObject {
+enum LoggingLevel derives EnumCodec {
   case debug, info, notice, warning, error, critical, alert, emergency
 }
 
@@ -26,12 +26,19 @@ case class Annotations(
       * A value of 1 means "most important," and indicates that the data is effectively required, while 0 means "least important," and
       * indicates that the data is entirely optional.
       */
-    priority: Option[Double] = None
+    priority: Option[Double] = None,
+    /** The moment the resource was last modified, as an ISO 8601 formatted string.
+      *
+      * Should be an ISO 8601 formatted string (e.g., "2025-01-12T15:00:58Z").
+      */
+    lastModified: Option[String] = None
 ) derives Codec.AsObject
 
 /** Describes the name and version of an MCP implementation.
   */
 case class Implementation(
     name: String,
-    version: String
+    version: String,
+    /** An optional title for display purposes. If not provided, the name should be used for display. */
+    title: Option[String] = None
 ) derives Codec.AsObject

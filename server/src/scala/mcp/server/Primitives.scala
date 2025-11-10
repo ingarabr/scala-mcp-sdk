@@ -68,7 +68,7 @@ case class ToolDef[F[_], Input, Output](
         handler(input)
           .map { output =>
             CallToolResult(
-              content = List(Content.Text(outputEncoder(output).noSpaces)),
+              content = List(Content.Text(outputEncoder(output).dropNullValues.noSpaces)),
               isError = Some(false)
             )
           }

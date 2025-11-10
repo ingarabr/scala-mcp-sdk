@@ -2,6 +2,7 @@ package mcp.protocol
 
 import io.circe.*
 import io.circe.generic.semiauto.*
+import io.circe.derivation.Configuration
 
 // ============================================================================
 // INITIALIZATION
@@ -176,6 +177,8 @@ case class CallToolRequest(
   */
 case class CallToolResult(
     content: List[Content],
+    /** An optional JSON object that represents the structured result of the tool call. */
+    structuredContent: Option[JsonObject] = None,
     /** Whether the tool execution resulted in an error. */
     isError: Option[Boolean] = None,
     _meta: Option[JsonObject] = None
@@ -278,7 +281,9 @@ case class Root(
     /** The URI of the root. This MUST be a valid URI. */
     uri: String,
     /** An optional name for the root. */
-    name: Option[String] = None
+    name: Option[String] = None,
+    /** See General fields: _meta for notes on _meta usage. */
+    _meta: Option[JsonObject] = None
 ) derives Codec.AsObject
 
 /** Sent from the server to request a list of root URIs from the client.
@@ -296,13 +301,44 @@ case class ListRootsResult(
 // COMPLETIONS
 // ============================================================================
 
-/** A reference to a resource, prompt, or other entity.
+/** A reference to a resource or prompt for completion.
+  *
+  * This is a discriminated union based on the `type` field.
   */
-case class CompletionReference(
-    `type`: String, // "ref/resource" | "ref/prompt"
-    uri: Option[String] = None,
-    name: Option[String] = None
-) derives Codec.AsObject
+enum CompletionReference {
+
+  /** Reference to a resource template.
+    *
+    * JSON type: "ref/resource"
+    */
+  case ResourceTemplate(
+      /** The URI or URI template of the resource. */
+      uri: String
+  )
+
+  /** Reference to a prompt.
+    *
+    * JSON type: "ref/prompt"
+    */
+  case Prompt(
+      /** The name of the prompt. */
+      name: String,
+      /** An optional title for display purposes. */
+      title: Option[String] = None
+  )
+}
+
+object CompletionReference {
+  private given Configuration = Configuration.default
+    .withTransformConstructorNames {
+      case "ResourceTemplate" => "ref/resource"
+      case "Prompt"           => "ref/prompt"
+      case other              => other // Should never happen, but satisfies exhaustiveness check
+    }
+    .withSnakeCaseMemberNames
+    .withDiscriminator("type")
+  given Codec.AsObject[CompletionReference] = Codec.AsObject.derivedConfigured
+}
 
 /** A request from the client to ask for completion suggestions.
   */

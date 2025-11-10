@@ -95,7 +95,7 @@ class McpHttp4sServer[F[_]: Async](
         .fromQueueNoneTerminated(outgoingQueue)
         .map { message =>
           // Format as SSE event
-          val data = message.asJson.noSpaces
+          val data = message.asJson.deepDropNullValues.noSpaces
           s"event: message\ndata: $data\n\n"
         }
 

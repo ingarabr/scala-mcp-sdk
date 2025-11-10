@@ -17,7 +17,11 @@ case class Resource(
     /** Optional annotations for the client. */
     annotations: Option[Annotations] = None,
     /** The size of the resource in bytes, if known. */
-    size: Option[Long] = None
+    size: Option[Long] = None,
+    /** An optional title for display purposes. If not provided, the name should be used for display. */
+    title: Option[String] = None,
+    /** See General fields: _meta for notes on _meta usage. */
+    _meta: Option[JsonObject] = None
 ) derives Codec.AsObject
 
 /** A template description for resources available on the server.
@@ -34,18 +38,9 @@ case class ResourceTemplate(
       */
     mimeType: Option[String] = None,
     /** Optional annotations for the client. */
-    annotations: Option[Annotations] = None
+    annotations: Option[Annotations] = None,
+    /** An optional title for display purposes. If not provided, the name should be used for display. */
+    title: Option[String] = None,
+    /** See General fields: _meta for notes on _meta usage. */
+    _meta: Option[JsonObject] = None
 ) derives Codec.AsObject
-
-/** A reference to a resource or resource template definition.
-  */
-enum ResourceReference derives Codec.AsObject {
-
-  /** Reference to a resource by URI.
-    */
-  case Uri(uri: String)
-
-  /** Reference to a resource template by URI template.
-    */
-  case Template(uriTemplate: String)
-}

@@ -39,8 +39,8 @@ class StdioTransport[F[_]: Async] private (
     * Serializes the response to JSON and writes it to stdout with a newline.
     */
   def send(message: JsonRpcResponse): F[Unit] = {
-    val json = message.asJson.noSpaces
-    val bytes = (json + "\n").getBytes("UTF-8")
+    val json = message.asJson.deepDropNullValues.noSpaces ++ "\n"
+    val bytes = json.getBytes("UTF-8")
     Stream
       .chunk(fs2.Chunk.array(bytes))
       .through(stdout[F])

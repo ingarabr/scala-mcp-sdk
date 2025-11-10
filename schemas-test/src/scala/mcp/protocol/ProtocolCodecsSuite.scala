@@ -68,4 +68,68 @@ class ProtocolCodecsSuite extends FunSuite {
     val decoded = json.as[Tool]
     assertEquals(decoded, Right(tool))
   }
+
+  test("CompletionReference.ResourceTemplate codec roundtrip") {
+    val ref = CompletionReference.ResourceTemplate("file:///path/to/{name}")
+    roundupDiscriminator[CompletionReference](ref, "ref/resource")
+  }
+
+  test("CompletionReference.Prompt codec roundtrip") {
+    val ref = CompletionReference.Prompt("greeting", Some("Greeting Prompt"))
+    roundupDiscriminator[CompletionReference](ref, "ref/prompt")
+  }
+
+  test("Content.Text codec roundtrip with discriminator") {
+    val content = Content.Text("Hello world", None, None)
+    roundupDiscriminator[Content](content, "text")
+  }
+
+  test("Content.Image codec roundtrip with discriminator") {
+    val content = Content.Image("base64data", "image/png", None, None)
+    roundupDiscriminator[Content](content, "image")
+  }
+
+  test("Content.Audio codec roundtrip with discriminator") {
+    val content = Content.Audio("base64audiodata", "audio/mpeg", None, None)
+    roundupDiscriminator[Content](content, "audio")
+  }
+
+  test("Content.Resource codec roundtrip with discriminator") {
+    val resourceContents = ResourceContents.Text("file:///test.txt", "content", None, None)
+    val content = Content.Resource(resourceContents, None, None)
+    roundupDiscriminator[Content](content, "resource")
+  }
+
+  test("Content.ResourceLink codec roundtrip with discriminator") {
+    val content = Content.ResourceLink(
+      uri = "file:///test.txt",
+      name = "Test File",
+      description = Some("A test file"),
+      mimeType = Some("text/plain"),
+      annotations = None,
+      size = None,
+      title = None,
+      _meta = None
+    )
+    roundupDiscriminator[Content](content, "resource_link")
+
+  }
+
+  test("ResourceContents.Text codec roundtrip with discriminator") {
+    val contents = ResourceContents.Text("file:///test.txt", "Hello", Some("text/plain"), None)
+    roundupDiscriminator[ResourceContents](contents, "text")
+  }
+
+  test("ResourceContents.Blob codec roundtrip with discriminator") {
+    val contents = ResourceContents.Blob("file:///image.png", "base64data", Some("image/png"), None)
+    roundupDiscriminator[ResourceContents](contents, "blob")
+  }
+
+  private def roundupDiscriminator[A: Codec](contents: A, typeValue: String): Unit = {
+    val json = contents.asJson
+    val decoded = json.as[A]
+    assertEquals(decoded, Right(contents))
+    val jsonStr = json.noSpaces
+    assert(jsonStr.contains(s"\"type\":\"$typeValue\""))
+  }
 }

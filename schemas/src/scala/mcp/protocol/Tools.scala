@@ -13,8 +13,14 @@ case class Tool(
     /** A JSON Schema object defining the expected parameters for the tool.
       */
     inputSchema: JsonObject,
+    /** An optional JSON Schema object defining the structure of the tool's output returned in the structuredContent field of a
+      * CallToolResult.
+      */
+    outputSchema: Option[JsonObject] = None,
     /** Optional annotations for tool behavior hints. */
-    annotations: Option[ToolAnnotations] = None
+    annotations: Option[ToolAnnotations] = None,
+    /** See General fields: _meta for notes on _meta usage. */
+    _meta: Option[JsonObject] = None
 ) derives Codec.AsObject
 
 /** Optional annotations for tools to provide hints about their behavior.
