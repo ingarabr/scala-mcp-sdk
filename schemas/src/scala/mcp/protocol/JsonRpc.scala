@@ -1,6 +1,7 @@
 package mcp.protocol
 
 import io.circe.*
+import io.circe.syntax.*
 import io.circe.generic.semiauto.*
 
 def stringOrIntCodec[A](de: String | Int => A, en: A => String | Int): Codec[A] =
@@ -45,20 +46,85 @@ object Constants {
   val INTERNAL_ERROR = -32603
 }
 
-/** Refers to any valid JSON-RPC object that can be decoded off the wire, or encoded to be sent.
-  */
-enum JsonRpcMessage {
+/** Messages from client to server (requests and notifications). */
+enum JsonRpcRequest {
   case Request(jsonrpc: String, id: RequestId, method: String, params: Option[JsonObject])
   case Notification(jsonrpc: String, method: String, params: Option[JsonObject])
-  case Response(jsonrpc: String, id: RequestId, result: JsonObject)
-  case Error(jsonrpc: String, id: RequestId, error: ErrorData)
-
-  case BatchRequest(messages: List[JsonRpcMessage])
-  case BatchResponse(messages: List[JsonRpcMessage])
 }
 
-object JsonRpcMessage {
-  given Codec[JsonRpcMessage] = Codec.AsObject.derived[JsonRpcMessage]
+object JsonRpcRequest {
+  given Codec[JsonRpcRequest] = new Codec[JsonRpcRequest] {
+    def apply(c: HCursor): Decoder.Result[JsonRpcRequest] =
+      // Distinguish Request vs Notification by presence of id
+      for {
+        jsonrpc <- c.get[String]("jsonrpc")
+        method <- c.get[String]("method")
+        params <- c.get[Option[JsonObject]]("params")
+        maybeId <- c.get[Option[RequestId]]("id")
+        result <- maybeId match {
+          case Some(id) => Right(Request(jsonrpc, id, method, params))
+          case None     => Right(Notification(jsonrpc, method, params))
+        }
+      } yield result
+
+    def apply(a: JsonRpcRequest): Json = a match {
+      case Request(jsonrpc, id, method, params) =>
+        JsonObject(
+          "jsonrpc" -> Json.fromString(jsonrpc),
+          "id" -> id.asJson,
+          "method" -> Json.fromString(method),
+          "params" -> params.asJson
+        ).asJson
+      case Notification(jsonrpc, method, params) =>
+        JsonObject(
+          "jsonrpc" -> Json.fromString(jsonrpc),
+          "method" -> Json.fromString(method),
+          "params" -> params.asJson
+        ).asJson
+    }
+  }
+}
+
+/** Messages from server to client (responses and errors). */
+enum JsonRpcResponse {
+  case Response(jsonrpc: String, id: RequestId, result: JsonObject)
+  case Error(jsonrpc: String, id: Option[RequestId], error: ErrorData)
+}
+
+object JsonRpcResponse {
+  given Codec[JsonRpcResponse] = new Codec[JsonRpcResponse] {
+    def apply(c: HCursor): Decoder.Result[JsonRpcResponse] =
+      // Distinguish Response vs Error by presence of result vs error
+      for {
+        jsonrpc <- c.get[String]("jsonrpc")
+        result <- c.get[Option[JsonObject]]("result").flatMap {
+          case Some(res) =>
+            // This is a Response - id is required
+            c.get[RequestId]("id").map(id => Response(jsonrpc, id, res))
+          case None =>
+            // This is an Error - id may be null (for parse/invalid request errors)
+            for {
+              maybeId <- c.get[Option[RequestId]]("id")
+              errorData <- c.get[ErrorData]("error")
+            } yield Error(jsonrpc, maybeId, errorData)
+        }
+      } yield result
+
+    def apply(a: JsonRpcResponse): Json = a match {
+      case Response(jsonrpc, id, result) =>
+        JsonObject(
+          "jsonrpc" -> Json.fromString(jsonrpc),
+          "id" -> id.asJson,
+          "result" -> result.asJson
+        ).asJson
+      case Error(jsonrpc, id, error) =>
+        JsonObject(
+          "jsonrpc" -> Json.fromString(jsonrpc),
+          "id" -> id.asJson,
+          "error" -> error.asJson
+        ).asJson
+    }
+  }
 }
 
 /** Error data in a JSON-RPC error response.

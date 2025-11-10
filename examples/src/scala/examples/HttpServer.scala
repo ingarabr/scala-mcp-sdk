@@ -1,7 +1,6 @@
 package examples
 
 import cats.effect.{ExitCode, IO, IOApp}
-import cats.syntax.all.*
 import com.comcast.ip4s.*
 import mcp.protocol.Implementation
 import mcp.http4s.McpHttp4sServer

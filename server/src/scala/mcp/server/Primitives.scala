@@ -1,7 +1,6 @@
 package mcp.server
 
-import cats.{ApplicativeError, ApplicativeThrow}
-import cats.effect.*
+import cats.ApplicativeError
 import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*

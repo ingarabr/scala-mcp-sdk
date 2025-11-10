@@ -125,27 +125,27 @@ private class McpServerImpl[F[_]: Async](
       .compile
       .drain
 
-  /** Handle an incoming JSON-RPC message and optionally generate a response.
+  /** Handle an incoming JSON-RPC request and optionally generate a response.
     *
     * Returns None for notifications (which should not receive responses per JSON-RPC spec).
     */
-  private def handleMessage(message: JsonRpcMessage): F[Option[JsonRpcMessage]] =
+  private def handleMessage(message: JsonRpcRequest): F[Option[JsonRpcResponse]] =
     message match {
-      case JsonRpcMessage.Request(jsonrpc, id, method, params) =>
+      case JsonRpcRequest.Request(jsonrpc, id, method, params) =>
         handleRequest(method, params)
           .map {
             case Right(result) =>
-              Some(JsonRpcMessage.Response(jsonrpc, id, result))
+              Some(JsonRpcResponse.Response(jsonrpc, id, result))
             case Left(errorData) =>
-              Some(JsonRpcMessage.Error(jsonrpc, id, errorData))
+              Some(JsonRpcResponse.Error(jsonrpc, Some(id), errorData))
           }
           .handleErrorWith { error =>
             // Catch-all for unexpected exceptions
             Async[F].pure(
               Some(
-                JsonRpcMessage.Error(
+                JsonRpcResponse.Error(
                   jsonrpc,
-                  id,
+                  Some(id),
                   ErrorData(
                     code = Constants.INTERNAL_ERROR,
                     message = error.getMessage,
@@ -156,24 +156,9 @@ private class McpServerImpl[F[_]: Async](
             )
           }
 
-      case JsonRpcMessage.Notification(_, method, params) =>
+      case JsonRpcRequest.Notification(_, method, params) =>
         // Notifications don't get responses per JSON-RPC 2.0 spec
         handleNotification(method, params).as(None)
-
-      case _ =>
-        // Other message types (Response, Error, Batch) are not expected from clients
-        Async[F].pure(
-          Some(
-            JsonRpcMessage.Error(
-              Constants.JSONRPC_VERSION,
-              RequestId("unknown"),
-              ErrorData(
-                code = Constants.INVALID_REQUEST,
-                message = "Unexpected message type from client"
-              )
-            )
-          )
-        )
     }
 
   /** Extract capabilities from connection state and pass to handler.

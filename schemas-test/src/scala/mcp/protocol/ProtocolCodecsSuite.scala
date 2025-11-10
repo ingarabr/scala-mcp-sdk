@@ -2,7 +2,6 @@ package mcp.protocol
 
 import io.circe.*
 import io.circe.syntax.*
-import io.circe.parser.*
 import munit.*
 
 class ProtocolCodecsSuite extends FunSuite {

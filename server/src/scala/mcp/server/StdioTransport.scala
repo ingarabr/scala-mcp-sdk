@@ -2,14 +2,13 @@ package mcp.server
 
 import cats.effect.*
 import cats.effect.std.Queue
-import cats.syntax.all.*
 import cats.effect.syntax.spawn.*
 import fs2.Stream
 import fs2.io.{stdin, stdout}
 import fs2.text
 import io.circe.parser.*
 import io.circe.syntax.*
-import mcp.protocol.JsonRpcMessage
+import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse}
 
 /** Transport implementation using standard input/output.
   *
@@ -22,27 +21,24 @@ import mcp.protocol.JsonRpcMessage
   *
   * @param inQueue
   *   Queue for incoming messages parsed from stdin
-  * @param chunkSize
-  *   Size of chunks to read from stdin (default 4096 bytes)
   */
 class StdioTransport[F[_]: Async] private (
-    inQueue: Queue[F, Option[JsonRpcMessage]],
-    chunkSize: Int
+    inQueue: Queue[F, Option[JsonRpcRequest]]
 ) extends Transport[F] {
 
-  /** Stream of incoming messages from stdin.
+  /** Stream of incoming requests from stdin.
     *
-    * Reads lines from stdin, parses them as JSON-RPC messages, and emits them. Invalid JSON or malformed messages are logged to stderr but
+    * Reads lines from stdin, parses them as JSON-RPC requests, and emits them. Invalid JSON or malformed messages are logged to stderr but
     * don't stop the stream.
     */
-  def receive: Stream[F, JsonRpcMessage] =
+  def receive: Stream[F, JsonRpcRequest] =
     Stream.fromQueueNoneTerminated(inQueue)
 
-  /** Send a message to stdout.
+  /** Send a response to stdout.
     *
-    * Serializes the message to JSON and writes it to stdout with a newline.
+    * Serializes the response to JSON and writes it to stdout with a newline.
     */
-  def send(message: JsonRpcMessage): F[Unit] = {
+  def send(message: JsonRpcResponse): F[Unit] = {
     val json = message.asJson.noSpaces
     val bytes = (json + "\n").getBytes("UTF-8")
     Stream
@@ -59,9 +55,9 @@ object StdioTransport {
     *
     * This starts a background fiber that:
     *   - Reads lines from stdin
-    *   - Parses them as JSON-RPC messages
-    *   - Enqueues valid messages
-    *   - Logs errors to stderr for invalid messages
+    *   - Parses them as JSON-RPC requests
+    *   - Enqueues valid requests
+    *   - Sends JSON-RPC error responses for invalid messages (per spec)
     *
     * @param chunkSize
     *   Size of chunks to read from stdin
@@ -69,32 +65,52 @@ object StdioTransport {
     *   Resource managing the transport and background fiber
     */
   def apply[F[_]: Async](chunkSize: Int = 4096): cats.effect.Resource[F, StdioTransport[F]] =
-    cats.effect.Resource.eval(Queue.unbounded[F, Option[JsonRpcMessage]]).flatMap { queue =>
+    for {
+      queue <- cats.effect.Resource.eval(Queue.unbounded[F, Option[JsonRpcRequest]])
+      transport = new StdioTransport[F](queue)
+
       // Background fiber to read from stdin and parse messages
-      val readLoop = stdin[F](chunkSize)
+      _ <- stdin[F](chunkSize)
         .through(text.utf8.decode)
         .through(text.lines)
         .evalMap { line =>
-          parse(line).flatMap(_.as[JsonRpcMessage]) match {
-            case Right(message) =>
-              queue.offer(Some(message))
-            case Left(error) =>
-              // Log to stderr but don't stop the stream
-              Stream
-                .emit(s"Failed to parse message: ${error.getMessage}\n")
-                .through(text.utf8.encode)
-                .through(fs2.io.stderr[F])
-                .compile
-                .drain
+          parse(line) match {
+            case Right(json) =>
+              json.as[JsonRpcRequest] match {
+                case Right(request) =>
+                  queue.offer(Some(request))
+
+                case Left(decodeError) =>
+                  transport.send(
+                    JsonRpcResponse.Error(
+                      jsonrpc = Constants.JSONRPC_VERSION,
+                      id = None,
+                      error = ErrorData(
+                        code = Constants.INVALID_REQUEST,
+                        message = "Invalid Request",
+                        data = Some(io.circe.Json.fromString(decodeError.getMessage))
+                      )
+                    )
+                  )
+              }
+
+            case Left(parseError) =>
+              transport.send(
+                JsonRpcResponse.Error(
+                  jsonrpc = Constants.JSONRPC_VERSION,
+                  id = None, // Per JSON-RPC spec: id MUST be null for parse errors
+                  error = ErrorData(
+                    code = Constants.PARSE_ERROR,
+                    message = "Parse error",
+                    data = Some(io.circe.Json.fromString(parseError.getMessage))
+                  )
+                )
+              )
           }
         }
         .onFinalize(queue.offer(None)) // Signal end of stream
         .compile
         .drain
-
-      // Start the read loop in the background
-      readLoop.background.map { _ =>
-        new StdioTransport[F](queue, chunkSize)
-      }
-    }
+        .background
+    } yield transport
 }

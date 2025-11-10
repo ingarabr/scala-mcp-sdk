@@ -1,6 +1,8 @@
 package mcp.schema
 
 import io.circe.{Codec, Decoder, Encoder, JsonObject}
+
+import scala.annotation.tailrec
 import scala.deriving.Mirror
 import scala.quoted.*
 import scala.compiletime.{erasedValue, summonInline}
@@ -81,7 +83,7 @@ object McpSchema {
     }
 
     // Generate the JSON schema
-    val schemaExpr = generateJsonSchema(using q)(fieldData, typeSymbol.name)
+    val schemaExpr = generateJsonSchema(using q)(fieldData)
 
     // Get the codec from implicit scope
     Expr.summon[Codec.AsObject[A]] match {
@@ -105,12 +107,9 @@ object McpSchema {
   private def generateJsonSchema(using
       q: Quotes
   )(
-      fields: List[(String, String, String, Boolean)], // (name, description, jsonType, isOptional)
-      typeName: String
+      fields: List[(String, String, String, Boolean)] // (name, description, jsonType, isOptional)
   ): Expr[JsonObject] = {
-    import q.reflect.*
     import io.circe.Json
-    import io.circe.syntax.*
 
     // Build expressions for each field property
     val fieldExprs = fields.map { case (name, desc, jsonType, isOptional) =>
@@ -152,6 +151,7 @@ object McpSchema {
   }
 
   /** Map Scala types to JSON schema types */
+  @tailrec
   private def scalaTypeToJsonType(using q: Quotes)(tpe: q.reflect.TypeRepr): String = {
     import q.reflect.*
 

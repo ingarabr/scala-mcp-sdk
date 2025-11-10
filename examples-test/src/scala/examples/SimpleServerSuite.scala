@@ -1,13 +1,13 @@
 package examples
 
-import cats.effect.{IO, Resource as CatsResource}
+import cats.effect.IO
 import cats.effect.std.Queue
 import fs2.Stream
 import io.circe.*
 import io.circe.syntax.*
 import io.circe.parser.*
 import mcp.protocol.*
-import mcp.server.{McpServer, StdioTransport, Transport}
+import mcp.server.{McpServer, Transport}
 import munit.CatsEffectSuite
 import examples.tools.{AddTool, EchoTool}
 import examples.resources.ServerConfigResource
@@ -26,33 +26,33 @@ class SimpleServerSuite extends CatsEffectSuite {
 
   /** In-memory transport for testing - simulates client-server communication */
   class TestTransport(
-      serverToClient: Queue[IO, Option[JsonRpcMessage]],
-      clientToServer: Queue[IO, Option[JsonRpcMessage]]
+      serverToClient: Queue[IO, Option[JsonRpcResponse]],
+      clientToServer: Queue[IO, Option[JsonRpcRequest]]
   ) extends Transport[IO] {
 
-    def receive: Stream[IO, JsonRpcMessage] =
+    def receive: Stream[IO, JsonRpcRequest] =
       Stream.fromQueueNoneTerminated(clientToServer)
 
-    def send(message: JsonRpcMessage): IO[Unit] =
+    def send(message: JsonRpcResponse): IO[Unit] =
       serverToClient.offer(Some(message)).void
   }
 
   object TestTransport {
-    def create: IO[(TestTransport, Queue[IO, Option[JsonRpcMessage]], Queue[IO, Option[JsonRpcMessage]])] =
+    def create: IO[(TestTransport, Queue[IO, Option[JsonRpcResponse]], Queue[IO, Option[JsonRpcRequest]])] =
       for {
-        serverToClient <- Queue.unbounded[IO, Option[JsonRpcMessage]]
-        clientToServer <- Queue.unbounded[IO, Option[JsonRpcMessage]]
+        serverToClient <- Queue.unbounded[IO, Option[JsonRpcResponse]]
+        clientToServer <- Queue.unbounded[IO, Option[JsonRpcRequest]]
       } yield (new TestTransport(serverToClient, clientToServer), serverToClient, clientToServer)
   }
 
   /** Helper to send a request and get a response */
   def sendRequest(
-      clientToServer: Queue[IO, Option[JsonRpcMessage]],
-      serverToClient: Queue[IO, Option[JsonRpcMessage]],
+      clientToServer: Queue[IO, Option[JsonRpcRequest]],
+      serverToClient: Queue[IO, Option[JsonRpcResponse]],
       method: String,
       params: Option[JsonObject] = None
-  ): IO[JsonRpcMessage] = {
-    val request = JsonRpcMessage.Request(
+  ): IO[JsonRpcResponse] = {
+    val request = JsonRpcRequest.Request(
       jsonrpc = Constants.JSONRPC_VERSION,
       id = RequestId("test-1"),
       method = method,
@@ -69,8 +69,8 @@ class SimpleServerSuite extends CatsEffectSuite {
 
   /** Helper to initialize the server (required before calling any other methods) */
   def initializeServer(
-      clientToServer: Queue[IO, Option[JsonRpcMessage]],
-      serverToClient: Queue[IO, Option[JsonRpcMessage]]
+      clientToServer: Queue[IO, Option[JsonRpcRequest]],
+      serverToClient: Queue[IO, Option[JsonRpcResponse]]
   ): IO[Unit] = {
     val initRequest = InitializeRequest(
       protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
@@ -83,7 +83,7 @@ class SimpleServerSuite extends CatsEffectSuite {
       // Send initialized notification
       _ <- clientToServer.offer(
         Some(
-          JsonRpcMessage.Notification(
+          JsonRpcRequest.Notification(
             jsonrpc = Constants.JSONRPC_VERSION,
             method = "initialized",
             params = None
@@ -118,7 +118,7 @@ class SimpleServerSuite extends CatsEffectSuite {
 
             // Verify response
             _ = response match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 val initResult = result.asJson.as[InitializeResult]
                 assert(initResult.isRight, s"Failed to decode InitializeResult: $initResult")
                 initResult.toOption match {
@@ -139,7 +139,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             // Send initialized notification
             _ <- clientToServer.offer(
               Some(
-                JsonRpcMessage.Notification(
+                JsonRpcRequest.Notification(
                   jsonrpc = Constants.JSONRPC_VERSION,
                   method = "initialized",
                   params = None
@@ -174,7 +174,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             response <- sendRequest(clientToServer, serverToClient, "tools/list")
 
             _ = response match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 val toolsResult = result.asJson.as[ListToolsResult]
                 assert(toolsResult.isRight, s"Failed to decode ListToolsResult: $toolsResult")
                 toolsResult.toOption match {
@@ -237,7 +237,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
 
             _ = response match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 val toolResult = result.asJson.as[CallToolResult]
                 assert(toolResult.isRight, s"Failed to decode CallToolResult: $toolResult")
                 toolResult.toOption match {
@@ -290,7 +290,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
 
             _ = response match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 val toolResult = result.asJson.as[CallToolResult]
                 assert(toolResult.isRight, s"Failed to decode CallToolResult: $toolResult")
                 toolResult.toOption match {
@@ -339,7 +339,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             response <- sendRequest(clientToServer, serverToClient, "resources/list")
 
             _ = response match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 val resourcesResult = result.asJson.as[ListResourcesResult]
                 assert(resourcesResult.isRight, s"Failed to decode ListResourcesResult: $resourcesResult")
                 resourcesResult.toOption match {
@@ -382,7 +382,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             response <- sendRequest(clientToServer, serverToClient, "prompts/list")
 
             _ = response match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 val promptsResult = result.asJson.as[ListPromptsResult]
                 assert(promptsResult.isRight, s"Failed to decode ListPromptsResult: $promptsResult")
                 promptsResult.toOption match {
@@ -431,7 +431,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             _ <- IO.println("\n=== Step 1: LLM initializes MCP connection ===")
             initResponse <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
             _ = initResponse match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 result.asJson.as[InitializeResult].toOption match {
                   case Some(initResult) =>
                     println(s"✓ Connected to: ${initResult.serverInfo.name} v${initResult.serverInfo.version}")
@@ -448,7 +448,7 @@ class SimpleServerSuite extends CatsEffectSuite {
 
             // Send initialized notification (no response expected per JSON-RPC spec)
             _ <- clientToServer.offer(
-              Some(JsonRpcMessage.Notification(Constants.JSONRPC_VERSION, "initialized", None))
+              Some(JsonRpcRequest.Notification(Constants.JSONRPC_VERSION, "initialized", None))
             )
 
             // Step 2: LLM discovers available tools
@@ -456,7 +456,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             toolsResponse <- sendRequest(clientToServer, serverToClient, "tools/list")
             _ <- IO {
               toolsResponse match {
-                case JsonRpcMessage.Response(_, _, result) =>
+                case JsonRpcResponse.Response(_, _, result) =>
                   val decodeAttempt = result.asJson.as[ListToolsResult]
                   decodeAttempt match {
                     case Right(toolsResult) =>
@@ -473,7 +473,7 @@ class SimpleServerSuite extends CatsEffectSuite {
                               properties.toIterable.foreach { case (name, schema) =>
                                 val desc = schema.asObject.flatMap(_("description")).flatMap(_.asString).getOrElse("")
                                 val typ = schema.asObject.flatMap(_("type")).flatMap(_.asString).getOrElse("")
-                                println(s"      ${name} (${typ}): ${desc}")
+                                println(s"      $name ($typ): $desc")
                               }
                             case None =>
                               println(s"    (no properties in schema)")
@@ -505,10 +505,10 @@ class SimpleServerSuite extends CatsEffectSuite {
             )
             addResponse <- sendRequest(clientToServer, serverToClient, "tools/call", Some(addRequest.asJsonObject))
             _ = addResponse match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 result.asJson.as[CallToolResult].toOption match {
                   case Some(callResult) =>
-                    assert(callResult.isError == Some(false), "Tool execution should succeed")
+                    assert(callResult.isError.contains(false), "Tool execution should succeed")
                     val textContent = callResult.content.head.asInstanceOf[Content.Text].text
                     println(s"✓ Tool returned: $textContent")
                     parse(textContent).toOption match {
@@ -564,7 +564,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             resourcesResponse <- sendRequest(clientToServer, serverToClient, "resources/list")
             resourceUri <- IO {
               resourcesResponse match {
-                case JsonRpcMessage.Response(_, _, result) =>
+                case JsonRpcResponse.Response(_, _, result) =>
                   result.asJson.as[ListResourcesResult].toOption match {
                     case Some(resourcesResult) if resourcesResult.resources.nonEmpty =>
                       println(s"✓ Found resource: ${resourcesResult.resources.head.name}")
@@ -584,7 +584,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             readRequest = ReadResourceRequest(uri = resourceUri)
             readResponse <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readRequest.asJsonObject))
             _ = readResponse match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 result.asJson.as[ReadResourceResult].toOption match {
                   case Some(readResult) if readResult.contents.nonEmpty =>
                     val content = readResult.contents.head.asInstanceOf[ResourceContents.Text]
@@ -633,7 +633,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             )
             promptResponse <- sendRequest(clientToServer, serverToClient, "prompts/get", Some(promptRequest.asJsonObject))
             _ = promptResponse match {
-              case JsonRpcMessage.Response(_, _, result) =>
+              case JsonRpcResponse.Response(_, _, result) =>
                 result.asJson.as[GetPromptResult].toOption match {
                   case Some(promptResult) =>
                     println(s"✓ Prompt generated ${promptResult.messages.length} message(s)")

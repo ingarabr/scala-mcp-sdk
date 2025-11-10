@@ -1,8 +1,7 @@
 package mcp.server
 
-import cats.effect.*
 import fs2.Stream
-import mcp.protocol.JsonRpcMessage
+import mcp.protocol.{JsonRpcRequest, JsonRpcResponse}
 
 /** Transport abstraction for MCP communication.
   *
@@ -15,21 +14,21 @@ import mcp.protocol.JsonRpcMessage
   */
 trait Transport[F[_]] {
 
-  /** Stream of incoming JSON-RPC messages from the client.
+  /** Stream of incoming JSON-RPC requests from the client.
     *
     * The stream should:
-    *   - Parse incoming data into JsonRpcMessage objects
+    *   - Parse incoming data into JsonRpcRequest objects (Request or Notification)
     *   - Handle malformed messages gracefully (emit errors or skip)
     *   - Complete when the connection is closed
     */
-  def receive: Stream[F, JsonRpcMessage]
+  def receive: Stream[F, JsonRpcRequest]
 
-  /** Send a JSON-RPC message to the client.
+  /** Send a JSON-RPC response to the client.
     *
     * @param message
-    *   The message to send
+    *   The response to send (Response or Error)
     * @return
     *   Effect that completes when the message has been sent
     */
-  def send(message: JsonRpcMessage): F[Unit]
+  def send(message: JsonRpcResponse): F[Unit]
 }

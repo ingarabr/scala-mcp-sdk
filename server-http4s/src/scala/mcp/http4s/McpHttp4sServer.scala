@@ -6,7 +6,7 @@ import cats.syntax.all.*
 import fs2.Stream
 import io.circe.*
 import io.circe.syntax.*
-import mcp.protocol.JsonRpcMessage
+import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse}
 import mcp.server.Transport
 import org.http4s.*
 import org.http4s.circe.*
@@ -55,18 +55,18 @@ object McpHttp4sServer {
     */
   def apply[F[_]: Async](queueSize: Int = 100): CatsResource[F, McpHttp4sServer[F]] =
     for {
-      // Queue for messages from client to server (received via POST)
-      incomingQueue <- CatsResource.eval(Queue.bounded[F, Option[JsonRpcMessage]](queueSize))
-      // Queue for messages from server to client (sent via SSE)
-      outgoingQueue <- CatsResource.eval(Queue.bounded[F, Option[JsonRpcMessage]](queueSize))
+      // Queue for requests from client to server (received via POST)
+      incomingQueue <- CatsResource.eval(Queue.bounded[F, Option[JsonRpcRequest]](queueSize))
+      // Queue for responses from server to client (sent via SSE)
+      outgoingQueue <- CatsResource.eval(Queue.bounded[F, Option[JsonRpcResponse]](queueSize))
       // Track active SSE connections
       connectionCount <- CatsResource.eval(Ref.of[F, Int](0))
     } yield new McpHttp4sServer[F](incomingQueue, outgoingQueue, connectionCount)
 }
 
 class McpHttp4sServer[F[_]: Async](
-    incomingQueue: Queue[F, Option[JsonRpcMessage]],
-    outgoingQueue: Queue[F, Option[JsonRpcMessage]],
+    incomingQueue: Queue[F, Option[JsonRpcRequest]],
+    outgoingQueue: Queue[F, Option[JsonRpcResponse]],
     connectionCount: Ref[F, Int]
 ) extends Transport[F] {
 
@@ -110,28 +110,54 @@ class McpHttp4sServer[F[_]: Async](
         Header.Raw(CIString("Connection"), "keep-alive")
       )
 
-    // POST /message - Client sends a message to the server
+    // POST /message - Client sends a request to the server
     case req @ POST -> Root / "message" =>
-      (for {
-        json <- req.as[Json]
-        message <- Async[F].fromEither(
-          json.as[JsonRpcMessage].leftMap { err =>
-            new RuntimeException(s"Failed to decode JSON-RPC message: ${err.getMessage}")
+      req
+        .as[Json]
+        .flatMap { json =>
+          json.as[JsonRpcRequest] match {
+            case Right(request) =>
+              incomingQueue.offer(Some(request)) >> Accepted()
+
+            case Left(decodeError) =>
+              outgoingQueue.offer(
+                Some(
+                  JsonRpcResponse.Error(
+                    jsonrpc = Constants.JSONRPC_VERSION,
+                    id = None,
+                    error = ErrorData(
+                      code = Constants.INVALID_REQUEST,
+                      message = "Invalid Request",
+                      data = Some(Json.fromString(decodeError.getMessage))
+                    )
+                  )
+                )
+              ) >> Accepted()
           }
-        )
-        _ <- incomingQueue.offer(Some(message))
-        response <- Accepted()
-      } yield response).handleErrorWith { error =>
-        BadRequest(s"Invalid message: ${error.getMessage}")
-      }
+        }
+        .handleErrorWith { parseError =>
+          outgoingQueue.offer(
+            Some(
+              JsonRpcResponse.Error(
+                jsonrpc = Constants.JSONRPC_VERSION,
+                id = None,
+                error = ErrorData(
+                  code = Constants.PARSE_ERROR,
+                  message = "Parse error",
+                  data = Some(Json.fromString(parseError.getMessage))
+                )
+              )
+            )
+          ) >> Accepted()
+        }
   }
 
-  /** Send a JSON-RPC message to the client via SSE stream. */
-  def send(message: JsonRpcMessage): F[Unit] =
+  /** Send a JSON-RPC response to the client via SSE stream. */
+  def send(message: JsonRpcResponse): F[Unit] =
     outgoingQueue.offer(Some(message)).void
 
-  /** Receive a stream of JSON-RPC messages from the client. */
-  def receive: Stream[F, JsonRpcMessage] =
+  /** Receive a stream of JSON-RPC requests from the client. */
+  def receive: Stream[F, JsonRpcRequest] =
     Stream.fromQueueNoneTerminated(incomingQueue)
 
   /** Get the current number of active SSE connections. */
