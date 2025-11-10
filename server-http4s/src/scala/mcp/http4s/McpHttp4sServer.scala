@@ -53,7 +53,7 @@ object McpHttp4sServer {
     * @return
     *   Resource managing the transport lifecycle
     */
-  def apply[F[_]: Async](queueSize: Int = 100): CatsResource[F, McpHttp4sServer[F]] = {
+  def apply[F[_]: Async](queueSize: Int = 100): CatsResource[F, McpHttp4sServer[F]] =
     for {
       // Queue for messages from client to server (received via POST)
       incomingQueue <- CatsResource.eval(Queue.bounded[F, Option[JsonRpcMessage]](queueSize))
@@ -62,7 +62,6 @@ object McpHttp4sServer {
       // Track active SSE connections
       connectionCount <- CatsResource.eval(Ref.of[F, Int](0))
     } yield new McpHttp4sServer[F](incomingQueue, outgoingQueue, connectionCount)
-  }
 }
 
 class McpHttp4sServer[F[_]: Async](
@@ -128,19 +127,12 @@ class McpHttp4sServer[F[_]: Async](
   }
 
   /** Send a JSON-RPC message to the client via SSE stream. */
-  def send(message: JsonRpcMessage): F[Unit] = {
+  def send(message: JsonRpcMessage): F[Unit] =
     outgoingQueue.offer(Some(message)).void
-  }
 
   /** Receive a stream of JSON-RPC messages from the client. */
-  def receive: Stream[F, JsonRpcMessage] = {
+  def receive: Stream[F, JsonRpcMessage] =
     Stream.fromQueueNoneTerminated(incomingQueue)
-  }
-
-  /** Close the transport, terminating all streams. */
-  def close: F[Unit] = {
-    incomingQueue.offer(None) *> outgoingQueue.offer(None)
-  }
 
   /** Get the current number of active SSE connections. */
   def activeConnections: F[Int] = connectionCount.get

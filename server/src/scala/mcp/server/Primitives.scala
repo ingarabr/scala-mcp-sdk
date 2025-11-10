@@ -15,8 +15,8 @@ import mcp.schema.McpSchema
   *   - Type-safe handler (Input => F[Output])
   *   - Annotations
   *
-  * The handler works with typed data structures, and JSON encoding/decoding happens automatically. The input schema is derived from the Input
-  * type using the Schema type class, which extracts field descriptions from Scaladoc comments.
+  * The handler works with typed data structures, and JSON encoding/decoding happens automatically. The input schema is derived from the
+  * Input type using the Schema type class, which extracts field descriptions from Scaladoc comments.
   *
   * @tparam F
   *   Effect type (e.g., IO)
@@ -43,19 +43,18 @@ case class ToolDef[F[_], Input, Output](
     handler: Input => F[Output],
     annotations: Option[ToolAnnotations] = None
 )(using
-  val inputSchema: McpSchema[Input],
-  val outputEncoder: Encoder[Output]
+    val inputSchema: McpSchema[Input],
+    val outputEncoder: Encoder[Output]
 ) {
 
   /** Convert to protocol Tool type for listing */
-  def toTool: Tool = {
+  def toTool: Tool =
     Tool(
       name = name,
       description = description,
       inputSchema = inputSchema.jsonSchema,
       annotations = annotations
     )
-  }
 
   /** Execute the tool with the given arguments, handling encoding/decoding internally */
   def execute(arguments: Option[JsonObject])(using F: ApplicativeError[F, Throwable]): F[CallToolResult] = {
@@ -128,17 +127,16 @@ case class ResourceDef[F[_], Output](
 )(using val outputEncoder: Encoder[Output]) {
 
   /** Convert to protocol Resource type for listing */
-  def toResource: ProtocolResource = {
+  def toResource: ProtocolResource =
     ProtocolResource(
       uri = uri,
       name = name,
       description = description,
       mimeType = mimeType
     )
-  }
 
   /** Read the resource contents, handling encoding internally */
-  def read(using F: ApplicativeError[F, Throwable]): F[ReadResourceResult] = {
+  def read(using F: ApplicativeError[F, Throwable]): F[ReadResourceResult] =
     handler()
       .map { output =>
         val text = outputEncoder(output).spaces2
@@ -165,7 +163,6 @@ case class ResourceDef[F[_], Output](
           )
         )
       }
-  }
 }
 
 /** A prompt definition with typed arguments.
@@ -199,13 +196,12 @@ case class PromptDef[F[_], Args](
 )(using val argsDecoder: Decoder[Args]) {
 
   /** Convert to protocol Prompt type for listing */
-  def toPrompt: Prompt = {
+  def toPrompt: Prompt =
     Prompt(
       name = name,
       description = description,
       arguments = if arguments.isEmpty then None else Some(arguments)
     )
-  }
 
   /** Get the prompt with the given arguments, handling decoding internally */
   def get(args: Option[JsonObject])(using F: ApplicativeError[F, Throwable]): F[GetPromptResult] = {

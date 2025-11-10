@@ -1,9 +1,7 @@
 package mcp.server
 
 import cats.effect.{Async, Ref, Resource as CatsResource}
-import cats.effect.std.Dispatcher
 import cats.syntax.all.*
-import fs2.Stream
 import io.circe.*
 import io.circe.syntax.*
 import mcp.protocol.*
@@ -83,13 +81,13 @@ object McpServer {
       prompts: List[PromptDef[F, _]] = Nil
   ): CatsResource[F, McpServer[F]] =
     CatsResource.eval {
-      Ref.of[F, Boolean](false).map { initializedRef =>
+      Ref.of[F, ConnectionState](ConnectionState.Uninitialized).map { connectionState =>
         new McpServerImpl[F](
           serverInfo = info,
           toolsMap = tools.map(t => t.name -> t).toMap,
           resourcesMap = resources.map(r => r.uri -> r).toMap,
           promptsMap = prompts.map(p => p.name -> p).toMap,
-          initializedRef = initializedRef
+          connectionState = connectionState
         )
       }
     }
@@ -107,40 +105,42 @@ private class McpServerImpl[F[_]: Async](
     toolsMap: Map[String, ToolDef[F, _, _]],
     resourcesMap: Map[String, ResourceDef[F, _]],
     promptsMap: Map[String, PromptDef[F, _]],
-    initializedRef: Ref[F, Boolean]
+    connectionState: Ref[F, ConnectionState]
 ) extends McpServer[F] {
 
   def info: Implementation = serverInfo
 
-  def capabilities: ServerCapabilities = {
+  def capabilities: ServerCapabilities =
     ServerCapabilities(
       tools = if toolsMap.nonEmpty then Some(ToolsCapability(listChanged = Some(false))) else None,
       resources = if resourcesMap.nonEmpty then Some(ResourcesCapability(subscribe = Some(false), listChanged = Some(false))) else None,
       prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(false))) else None
     )
-  }
 
-  def serve(transport: Transport[F]): F[Unit] = {
+  def serve(transport: Transport[F]): F[Unit] =
     transport.receive
       .evalMap(handleMessage)
       .collect { case Some(msg) => msg }
       .foreach(response => transport.send(response))
       .compile
       .drain
-  }
 
   /** Handle an incoming JSON-RPC message and optionally generate a response.
     *
     * Returns None for notifications (which should not receive responses per JSON-RPC spec).
     */
-  private def handleMessage(message: JsonRpcMessage): F[Option[JsonRpcMessage]] = {
+  private def handleMessage(message: JsonRpcMessage): F[Option[JsonRpcMessage]] =
     message match {
       case JsonRpcMessage.Request(jsonrpc, id, method, params) =>
         handleRequest(method, params)
-          .map { result =>
-            Some(JsonRpcMessage.Response(jsonrpc, id, result))
+          .map {
+            case Right(result) =>
+              Some(JsonRpcMessage.Response(jsonrpc, id, result))
+            case Left(errorData) =>
+              Some(JsonRpcMessage.Error(jsonrpc, id, errorData))
           }
           .handleErrorWith { error =>
+            // Catch-all for unexpected exceptions
             Async[F].pure(
               Some(
                 JsonRpcMessage.Error(
@@ -175,42 +175,77 @@ private class McpServerImpl[F[_]: Async](
           )
         )
     }
-  }
 
-  /** Handle a request and return the result */
-  private def handleRequest(method: String, params: Option[JsonObject]): F[JsonObject] = {
+  /** Extract capabilities from connection state and pass to handler.
+    *
+    * Returns error if server is not initialized.
+    */
+  private def withCapabilities(
+      handler: ClientCapabilities => F[Either[ErrorData, JsonObject]]
+  ): F[Either[ErrorData, JsonObject]] =
+    connectionState.get.flatMap { state =>
+      state.clientCapabilities match {
+        case Some(caps) =>
+          handler(caps)
+        case None =>
+          Async[F].pure(
+            Left(
+              ErrorData(
+                code = Constants.INTERNAL_ERROR,
+                message = "Server not initialized"
+              )
+            )
+          )
+      }
+    }
+
+  /** Handle a request and return either an error or the result */
+  private def handleRequest(method: String, params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] =
     method match {
       case "initialize" =>
         handleInitialize(params)
 
       case "tools/list" =>
-        handleListTools(params)
+        withCapabilities(caps => handleListTools(params, caps))
 
       case "tools/call" =>
-        handleCallTool(params)
+        withCapabilities(caps => handleCallTool(params, caps))
 
       case "resources/list" =>
-        handleListResources(params)
+        withCapabilities(caps => handleListResources(params, caps))
 
       case "resources/read" =>
-        handleReadResource(params)
+        withCapabilities(caps => handleReadResource(params, caps))
 
       case "prompts/list" =>
-        handleListPrompts(params)
+        withCapabilities(caps => handleListPrompts(params, caps))
 
       case "prompts/get" =>
-        handleGetPrompt(params)
+        withCapabilities(caps => handleGetPrompt(params, caps))
 
       case _ =>
-        Async[F].raiseError(new Exception(s"Method not found: $method"))
+        Async[F].pure(
+          Left(
+            ErrorData(
+              code = Constants.METHOD_NOT_FOUND,
+              message = s"Method not found: $method"
+            )
+          )
+        )
     }
-  }
 
   /** Handle notifications (fire and forget) */
-  private def handleNotification(method: String, params: Option[JsonObject]): F[Unit] = {
+  private def handleNotification(method: String, params: Option[JsonObject]): F[Unit] =
     method match {
       case "initialized" =>
-        initializedRef.set(true)
+        // Transition from Initialized to Operational state
+        connectionState.get.flatMap {
+          case ConnectionState.Initialized(caps) =>
+            connectionState.set(ConnectionState.Operational(caps))
+          case _ =>
+            // Already operational or not yet initialized - ignore
+            Async[F].unit
+        }
 
       case "notifications/cancelled" =>
         // TODO: Handle cancellation
@@ -220,86 +255,137 @@ private class McpServerImpl[F[_]: Async](
         // Unknown notification, ignore
         Async[F].unit
     }
-  }
 
   // Request handlers
 
-  private def handleInitialize(params: Option[JsonObject]): F[JsonObject] = {
+  private def handleInitialize(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[InitializeRequest] match {
       case Right(request) =>
-        val result = InitializeResult(
-          protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
-          capabilities = capabilities,
-          serverInfo = info
-        )
-        Async[F].pure(result.asJsonObject)
+        for {
+          _ <- connectionState.set(ConnectionState.Initialized(request.capabilities))
+
+          result = InitializeResult(
+            protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
+            capabilities = capabilities,
+            serverInfo = info
+          )
+        } yield Right(result.asJsonObject)
 
       case Left(error) =>
-        Async[F].raiseError(new Exception(s"Invalid initialize request: ${error.getMessage}"))
+        Async[F].pure(
+          Left(
+            ErrorData(
+              code = Constants.INVALID_PARAMS,
+              message = s"Invalid initialize request: ${error.getMessage}"
+            )
+          )
+        )
     }
   }
 
-  private def handleListTools(params: Option[JsonObject]): F[JsonObject] = {
+  private def handleListTools(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val result = ListToolsResult(tools = toolsMap.values.map(_.toTool).toList)
-    Async[F].pure(result.asJsonObject)
+    Async[F].pure(Right(result.asJsonObject))
   }
 
-  private def handleCallTool(params: Option[JsonObject]): F[JsonObject] = {
+  private def handleCallTool(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[CallToolRequest] match {
       case Right(request) =>
         toolsMap.get(request.name) match {
           case Some(toolDef) =>
-            toolDef.execute(request.arguments).map(_.asJsonObject)
+            toolDef.execute(request.arguments).map(result => Right(result.asJsonObject))
           case None =>
-            Async[F].raiseError(new Exception(s"Tool not found: ${request.name}"))
+            Async[F].pure(
+              Left(
+                ErrorData(
+                  code = Constants.INVALID_PARAMS,
+                  message = s"Tool not found: ${request.name}"
+                )
+              )
+            )
         }
 
       case Left(error) =>
-        Async[F].raiseError(new Exception(s"Invalid tool call request: ${error.getMessage}"))
+        Async[F].pure(
+          Left(
+            ErrorData(
+              code = Constants.INVALID_PARAMS,
+              message = s"Invalid tool call request: ${error.getMessage}"
+            )
+          )
+        )
     }
   }
 
-  private def handleListResources(params: Option[JsonObject]): F[JsonObject] = {
+  private def handleListResources(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val result = ListResourcesResult(resources = resourcesMap.values.map(_.toResource).toList)
-    Async[F].pure(result.asJsonObject)
+    Async[F].pure(Right(result.asJsonObject))
   }
 
-  private def handleReadResource(params: Option[JsonObject]): F[JsonObject] = {
+  private def handleReadResource(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[ReadResourceRequest] match {
       case Right(request) =>
         resourcesMap.get(request.uri) match {
           case Some(resourceDef) =>
-            resourceDef.read.map(_.asJsonObject)
+            resourceDef.read.map(result => Right(result.asJsonObject))
           case None =>
-            Async[F].raiseError(new Exception(s"Resource not found: ${request.uri}"))
+            Async[F].pure(
+              Left(
+                ErrorData(
+                  code = Constants.INVALID_PARAMS,
+                  message = s"Resource not found: ${request.uri}"
+                )
+              )
+            )
         }
 
       case Left(error) =>
-        Async[F].raiseError(new Exception(s"Invalid read resource request: ${error.getMessage}"))
+        Async[F].pure(
+          Left(
+            ErrorData(
+              code = Constants.INVALID_PARAMS,
+              message = s"Invalid read resource request: ${error.getMessage}"
+            )
+          )
+        )
     }
   }
 
-  private def handleListPrompts(params: Option[JsonObject]): F[JsonObject] = {
+  private def handleListPrompts(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val result = ListPromptsResult(prompts = promptsMap.values.map(_.toPrompt).toList)
-    Async[F].pure(result.asJsonObject)
+    Async[F].pure(Right(result.asJsonObject))
   }
 
-  private def handleGetPrompt(params: Option[JsonObject]): F[JsonObject] = {
+  private def handleGetPrompt(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[GetPromptRequest] match {
       case Right(request) =>
         promptsMap.get(request.name) match {
           case Some(promptDef) =>
-            promptDef.get(request.arguments).map(_.asJsonObject)
+            promptDef.get(request.arguments).map(result => Right(result.asJsonObject))
           case None =>
-            Async[F].raiseError(new Exception(s"Prompt not found: ${request.name}"))
+            Async[F].pure(
+              Left(
+                ErrorData(
+                  code = Constants.INVALID_PARAMS,
+                  message = s"Prompt not found: ${request.name}"
+                )
+              )
+            )
         }
 
       case Left(error) =>
-        Async[F].raiseError(new Exception(s"Invalid get prompt request: ${error.getMessage}"))
+        Async[F].pure(
+          Left(
+            ErrorData(
+              code = Constants.INVALID_PARAMS,
+              message = s"Invalid get prompt request: ${error.getMessage}"
+            )
+          )
+        )
     }
   }
 }

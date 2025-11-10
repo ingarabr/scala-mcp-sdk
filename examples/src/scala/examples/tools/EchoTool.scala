@@ -12,21 +12,22 @@ import mcp.server.ToolDef
 object EchoTool {
 
   case class Input(
-      /** The message to echo back */ message: String
+      /** The message to echo back */
+      message: String
   ) derives Codec.AsObject
   object Input {
     given McpSchema[Input] = McpSchema.derived[Input]
   }
 
   case class Output(
-      /** The echoed message */ echo: String
+      /** The echoed message */
+      echo: String
   ) derives Codec.AsObject
 
-  def apply[F[_]: Async]: ToolDef[F, Input, Output] = {
+  def apply[F[_]: Async]: ToolDef[F, Input, Output] =
     ToolDef[F, Input, Output](
       name = "echo",
       description = Some("Echo back the input message"),
       handler = input => Async[F].pure(Output(s"Echo: ${input.message}"))
     )
-  }
 }

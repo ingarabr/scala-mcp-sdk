@@ -14,7 +14,7 @@ object GreetingPrompt {
 
   case class Args(name: String) derives Codec.AsObject
 
-  def apply[F[_]: Async]: PromptDef[F, Args] = {
+  def apply[F[_]: Async]: PromptDef[F, Args] =
     PromptDef[F, Args](
       name = "greeting",
       description = Some("Generate a friendly greeting"),
@@ -35,5 +35,4 @@ object GreetingPrompt {
           )
         )
     )
-  }
 }

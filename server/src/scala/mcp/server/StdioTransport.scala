@@ -35,9 +35,8 @@ class StdioTransport[F[_]: Async] private (
     * Reads lines from stdin, parses them as JSON-RPC messages, and emits them. Invalid JSON or malformed messages are logged to stderr but
     * don't stop the stream.
     */
-  def receive: Stream[F, JsonRpcMessage] = {
+  def receive: Stream[F, JsonRpcMessage] =
     Stream.fromQueueNoneTerminated(inQueue)
-  }
 
   /** Send a message to stdout.
     *
@@ -51,14 +50,6 @@ class StdioTransport[F[_]: Async] private (
       .through(stdout[F])
       .compile
       .drain
-  }
-
-  /** Close the transport.
-    *
-    * Signals the end of the input stream by enqueueing None.
-    */
-  def close: F[Unit] = {
-    inQueue.offer(None).void
   }
 }
 
@@ -77,7 +68,7 @@ object StdioTransport {
     * @return
     *   Resource managing the transport and background fiber
     */
-  def apply[F[_]: Async](chunkSize: Int = 4096): cats.effect.Resource[F, StdioTransport[F]] = {
+  def apply[F[_]: Async](chunkSize: Int = 4096): cats.effect.Resource[F, StdioTransport[F]] =
     cats.effect.Resource.eval(Queue.unbounded[F, Option[JsonRpcMessage]]).flatMap { queue =>
       // Background fiber to read from stdin and parse messages
       val readLoop = stdin[F](chunkSize)
@@ -106,5 +97,4 @@ object StdioTransport {
         new StdioTransport[F](queue, chunkSize)
       }
     }
-  }
 }

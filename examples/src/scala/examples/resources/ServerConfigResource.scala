@@ -17,7 +17,7 @@ object ServerConfigResource {
       environment: String
   ) derives Codec.AsObject
 
-  def apply[F[_]: Async]: ResourceDef[F, ServerConfig] = {
+  def apply[F[_]: Async]: ResourceDef[F, ServerConfig] =
     ResourceDef[F, ServerConfig](
       uri = "config://server.json",
       name = "Server Configuration",
@@ -32,5 +32,4 @@ object ServerConfigResource {
           )
         )
     )
-  }
 }

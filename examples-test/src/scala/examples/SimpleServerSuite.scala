@@ -30,26 +30,19 @@ class SimpleServerSuite extends CatsEffectSuite {
       clientToServer: Queue[IO, Option[JsonRpcMessage]]
   ) extends Transport[IO] {
 
-    def receive: Stream[IO, JsonRpcMessage] = {
+    def receive: Stream[IO, JsonRpcMessage] =
       Stream.fromQueueNoneTerminated(clientToServer)
-    }
 
-    def send(message: JsonRpcMessage): IO[Unit] = {
+    def send(message: JsonRpcMessage): IO[Unit] =
       serverToClient.offer(Some(message)).void
-    }
-
-    def close: IO[Unit] = {
-      serverToClient.offer(None).void *> clientToServer.offer(None).void
-    }
   }
 
   object TestTransport {
-    def create: IO[(TestTransport, Queue[IO, Option[JsonRpcMessage]], Queue[IO, Option[JsonRpcMessage]])] = {
+    def create: IO[(TestTransport, Queue[IO, Option[JsonRpcMessage]], Queue[IO, Option[JsonRpcMessage]])] =
       for {
         serverToClient <- Queue.unbounded[IO, Option[JsonRpcMessage]]
         clientToServer <- Queue.unbounded[IO, Option[JsonRpcMessage]]
       } yield (new TestTransport(serverToClient, clientToServer), serverToClient, clientToServer)
-    }
   }
 
   /** Helper to send a request and get a response */
@@ -72,6 +65,32 @@ class SimpleServerSuite extends CatsEffectSuite {
         case None      => IO.raiseError(new Exception("No response from server"))
       }
     } yield response
+  }
+
+  /** Helper to initialize the server (required before calling any other methods) */
+  def initializeServer(
+      clientToServer: Queue[IO, Option[JsonRpcMessage]],
+      serverToClient: Queue[IO, Option[JsonRpcMessage]]
+  ): IO[Unit] = {
+    val initRequest = InitializeRequest(
+      protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
+      capabilities = ClientCapabilities(),
+      clientInfo = Implementation("test-client", "1.0.0")
+    )
+    for {
+      // Send initialize request
+      _ <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
+      // Send initialized notification
+      _ <- clientToServer.offer(
+        Some(
+          JsonRpcMessage.Notification(
+            jsonrpc = Constants.JSONRPC_VERSION,
+            method = "initialized",
+            params = None
+          )
+        )
+      )
+    } yield ()
   }
 
   test("initialize handshake should succeed") {
@@ -128,8 +147,8 @@ class SimpleServerSuite extends CatsEffectSuite {
               )
             )
 
-            // Close transport
-            _ <- transport.close
+            // Signal end of stream
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -151,6 +170,7 @@ class SimpleServerSuite extends CatsEffectSuite {
 
         serverFiber.flatMap { fiber =>
           val test = for {
+            _ <- initializeServer(clientToServer, serverToClient)
             response <- sendRequest(clientToServer, serverToClient, "tools/list")
 
             _ = response match {
@@ -187,7 +207,7 @@ class SimpleServerSuite extends CatsEffectSuite {
                 fail(s"Expected Response, got: $other")
             }
 
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -213,6 +233,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             arguments = Some(JsonObject("message" -> Json.fromString("Hello, MCP!")))
           )
           val test = for {
+            _ <- initializeServer(clientToServer, serverToClient)
             response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
 
             _ = response match {
@@ -233,7 +254,7 @@ class SimpleServerSuite extends CatsEffectSuite {
                 fail(s"Expected Response, got: $other")
             }
 
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -265,6 +286,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             )
           )
           val test = for {
+            _ <- initializeServer(clientToServer, serverToClient)
             response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
 
             _ = response match {
@@ -291,7 +313,7 @@ class SimpleServerSuite extends CatsEffectSuite {
                 fail(s"Expected Response, got: $other")
             }
 
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -313,6 +335,7 @@ class SimpleServerSuite extends CatsEffectSuite {
 
         serverFiber.flatMap { fiber =>
           val test = for {
+            _ <- initializeServer(clientToServer, serverToClient)
             response <- sendRequest(clientToServer, serverToClient, "resources/list")
 
             _ = response match {
@@ -333,7 +356,7 @@ class SimpleServerSuite extends CatsEffectSuite {
                 fail(s"Expected Response, got: $other")
             }
 
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -355,6 +378,7 @@ class SimpleServerSuite extends CatsEffectSuite {
 
         serverFiber.flatMap { fiber =>
           val test = for {
+            _ <- initializeServer(clientToServer, serverToClient)
             response <- sendRequest(clientToServer, serverToClient, "prompts/list")
 
             _ = response match {
@@ -374,7 +398,7 @@ class SimpleServerSuite extends CatsEffectSuite {
                 fail(s"Expected Response, got: $other")
             }
 
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -412,8 +436,10 @@ class SimpleServerSuite extends CatsEffectSuite {
                   case Some(initResult) =>
                     println(s"✓ Connected to: ${initResult.serverInfo.name} v${initResult.serverInfo.version}")
                     println(s"  Protocol version: ${initResult.protocolVersion}")
-                    println(s"  Capabilities: tools=${initResult.capabilities.tools.isDefined}, " +
-                      s"resources=${initResult.capabilities.resources.isDefined}, prompts=${initResult.capabilities.prompts.isDefined}")
+                    println(
+                      s"  Capabilities: tools=${initResult.capabilities.tools.isDefined}, " +
+                        s"resources=${initResult.capabilities.resources.isDefined}, prompts=${initResult.capabilities.prompts.isDefined}"
+                    )
                   case None =>
                     fail(s"Failed to decode InitializeResult from: $result")
                 }
@@ -508,7 +534,7 @@ class SimpleServerSuite extends CatsEffectSuite {
             _ <- IO.println("LLM: The answer to 42 + 17 is 59.")
 
             // Cleanup
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -531,6 +557,7 @@ class SimpleServerSuite extends CatsEffectSuite {
         serverFiber.flatMap { fiber =>
           val test = for {
             _ <- IO.println("\n=== Simulating LLM reading server configuration ===")
+            _ <- initializeServer(clientToServer, serverToClient)
 
             // Step 1: LLM lists available resources
             _ <- IO.println("Step 1: LLM discovers resources")
@@ -573,7 +600,7 @@ class SimpleServerSuite extends CatsEffectSuite {
               case other => fail(s"Unexpected response: $other")
             }
 
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 
@@ -596,6 +623,7 @@ class SimpleServerSuite extends CatsEffectSuite {
         serverFiber.flatMap { fiber =>
           val test = for {
             _ <- IO.println("\n=== Simulating LLM using greeting prompt ===")
+            _ <- initializeServer(clientToServer, serverToClient)
 
             // Step 1: Get the prompt with arguments
             _ <- IO.println("Step 1: LLM retrieves greeting prompt for user 'Alice'")
@@ -620,7 +648,7 @@ class SimpleServerSuite extends CatsEffectSuite {
               case other => fail(s"Unexpected response: $other")
             }
 
-            _ <- transport.close
+            _ <- clientToServer.offer(None)
             _ <- fiber.join
           } yield ()
 

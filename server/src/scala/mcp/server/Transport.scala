@@ -9,6 +9,8 @@ import mcp.protocol.JsonRpcMessage
   * A transport handles the low-level message passing between client and server. It provides a stream of incoming messages and a way to send
   * outgoing messages.
   *
+  * This is pure infrastructure - it does NOT manage protocol state or lifecycle. That is handled by ConnectionState in the server layer.
+  *
   * Implementations include stdio (for command-line tools) and SSE/HTTP (for web-based servers).
   */
 trait Transport[F[_]] {
@@ -30,27 +32,4 @@ trait Transport[F[_]] {
     *   Effect that completes when the message has been sent
     */
   def send(message: JsonRpcMessage): F[Unit]
-
-  /** Close the transport and clean up resources.
-    *
-    * This should:
-    *   - Close any open connections/streams
-    *   - Flush pending messages
-    *   - Release acquired resources
-    */
-  def close: F[Unit]
-}
-
-object Transport {
-
-  /** Create a transport as a resource that automatically closes.
-    *
-    * @param makeTransport
-    *   Function to create the transport
-    * @return
-    *   Resource that manages the transport lifecycle
-    */
-  def resource[F[_]: Sync](makeTransport: F[Transport[F]]): cats.effect.Resource[F, Transport[F]] = {
-    cats.effect.Resource.make(makeTransport)(_.close)
-  }
 }
