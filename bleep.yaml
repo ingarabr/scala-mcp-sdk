@@ -4,7 +4,6 @@ jvm:
   name: graalvm-community:24.0.0
 projects:
   schemas:
-#    folder: ./schemas
     extends: template-main
     dependencies:
       - io.circe::circe-core:0.14.10
@@ -12,15 +11,19 @@ projects:
       - io.circe::circe-parser:0.14.10
 
   schemas-test:
-#    folder: ./schemas-test
     extends: template-test
     dependsOn: schemas
     dependencies:
       - org.scalameta::munit:1.1.0
       - org.typelevel::munit-cats-effect:2.0.0
 
+  scripts:
+    dependencies: build.bleep::bleep-plugin-ci-release:${BLEEP_VERSION}
+    extends: template-main
+    scala:
+      version: 3.7.3
+
   server:
-#    folder: ./server
     extends: template-main
     dependsOn: schemas
     dependencies:
@@ -29,7 +32,6 @@ projects:
       - co.fs2::fs2-io:3.11.0
 
   server-test:
-#    folder: ./server-test
     extends: template-test
     dependsOn: server
     dependencies:
@@ -37,7 +39,6 @@ projects:
       - org.typelevel::munit-cats-effect:2.0.0
 
   server-http4s:
-#    folder: ./server-http4s
     extends: template-main
     dependsOn: server
     dependencies:
@@ -45,7 +46,6 @@ projects:
       - org.http4s::http4s-circe:0.23.27
 
   server-http4s-test:
-#    folder: ./server-http4s-test
     extends: template-test
     dependsOn: server-http4s
     dependencies:
@@ -55,7 +55,6 @@ projects:
       - org.http4s::http4s-ember-client:0.23.27
 
   examples:
-#    folder: ./examples
     extends: template-main
     dependsOn:
       - server
@@ -67,12 +66,19 @@ projects:
       mainClass: examples.SimpleServer
 
   examples-test:
-#    folder: ./examples-test
     extends: template-test
     dependsOn: examples
     dependencies:
       - org.scalameta::munit:1.1.0
       - org.typelevel::munit-cats-effect:2.0.0
+
+scripts:
+  publish-locally:
+    main: scripts.PublishLocal
+    project: scripts
+  publish:
+    main: scripts.Publish
+    project: scripts
 
 templates:
   template-common:
