@@ -2,7 +2,8 @@ package examples.tools
 
 import cats.effect.*
 import io.circe.*
-import mcp.schema.McpSchema
+import mcp.protocol.Content
+import mcp.schema.{McpSchema, description}
 import mcp.server.ToolDef
 
 /** Echo tool - echoes back the input message.
@@ -11,23 +12,20 @@ import mcp.server.ToolDef
   */
 object EchoTool {
 
+  @description("Input for echo operation")
   case class Input(
-      /** The message to echo back */
+      @description("The message to echo back")
       message: String
   ) derives Codec.AsObject
   object Input {
-    given McpSchema[Input] = McpSchema.derived[Input]
+    given McpSchema[Input] = McpSchema.derived
   }
 
-  case class Output(
-      /** The echoed message */
-      echo: String
-  ) derives Codec.AsObject
-
-  def apply[F[_]: Async]: ToolDef[F, Input, Output] =
-    ToolDef[F, Input, Output](
+  def apply[F[_]: Async]: ToolDef[F, Input, Nothing] =
+    ToolDef.unstructured[F, Input](
       name = "echo",
-      description = Some("Echo back the input message"),
-      handler = input => Async[F].pure(Output(s"Echo: ${input.message}"))
-    )
+      description = Some("Echo back the input message")
+    ) { input =>
+      Async[F].pure(List(Content.Text(s"Echo: ${input.message}")))
+    }
 }

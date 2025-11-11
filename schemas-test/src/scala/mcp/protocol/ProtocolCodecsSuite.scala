@@ -56,7 +56,7 @@ class ProtocolCodecsSuite extends FunSuite {
     val tool = Tool(
       name = "test-tool",
       description = Some("A test tool"),
-      inputSchema = JsonObject.empty,
+      inputSchema = JsonSchemaType.ObjectSchema(),
       annotations = Some(
         ToolAnnotations(
           title = Some("Test Tool"),
@@ -123,6 +123,38 @@ class ProtocolCodecsSuite extends FunSuite {
   test("ResourceContents.Blob codec roundtrip with discriminator") {
     val contents = ResourceContents.Blob("file:///image.png", "base64data", Some("image/png"), None)
     roundupDiscriminator[ResourceContents](contents, "blob")
+  }
+
+  test("JsonSchemaType codec roundtrip") {
+    val schema = JsonSchemaType.ObjectSchema(
+      properties = Some(
+        Map(
+          "name" -> JsonSchemaType.StringSchema(description = Some("The name")),
+          "age" -> JsonSchemaType.IntegerSchema(description = Some("The age")),
+          "active" -> JsonSchemaType.BooleanSchema(description = None)
+        )
+      ),
+      required = Some(List("name")),
+      description = Some("A person schema")
+    )
+    val json = schema.asJson
+    val decoded = json.as[JsonSchemaType]
+
+    assertEquals(decoded, Right(schema))
+
+    // Also verify it's an ObjectSchema
+    decoded match {
+      case Right(_: JsonSchemaType.ObjectSchema) => // success
+      case Right(other)                          => fail(s"Expected ObjectSchema, got: $other")
+      case Left(error)                           => fail(s"Decode failed: $error")
+    }
+
+    // Verify the JSON structure
+    val jsonStr = json.noSpaces
+    assert(jsonStr.contains("\"type\":\"object\""))
+    assert(jsonStr.contains("\"properties\""))
+    assert(jsonStr.contains("\"required\""))
+    assert(jsonStr.contains("\"name\""))
   }
 
   private def roundupDiscriminator[A: Codec](contents: A, typeValue: String): Unit = {

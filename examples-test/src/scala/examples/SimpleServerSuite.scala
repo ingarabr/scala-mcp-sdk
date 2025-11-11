@@ -187,15 +187,14 @@ class SimpleServerSuite extends CatsEffectSuite {
                     // Verify add tool schema has properties
                     tools.find(_.name == "add") match {
                       case Some(addTool) =>
-                        val schemaJson = Json.fromJsonObject(addTool.inputSchema)
-                        val properties = schemaJson.asObject.flatMap(_("properties")).flatMap(_.asObject)
-                        assert(properties.isDefined, "Add tool should have properties in schema")
-                        val aField = properties.flatMap(_("a")).flatMap(_.asObject)
-                        assert(aField.isDefined, "Add tool should have field 'a' in schema")
-                        val bField = properties.flatMap(_("b")).flatMap(_.asObject)
-                        assert(bField.isDefined, "Add tool should have field 'b' in schema")
-                        val cField = properties.flatMap(_("c")).flatMap(_.asObject)
-                        assert(cField.isDefined, "Add tool should have field 'c' in schema")
+                        addTool.inputSchema match {
+                          case JsonSchemaType.ObjectSchema(properties, _, _) =>
+                            assert(properties.isDefined, "Add tool should have properties in schema")
+                            assert(properties.get.contains("a"), "Add tool should have field 'a' in schema")
+                            assert(properties.get.contains("b"), "Add tool should have field 'b' in schema")
+                          case _ =>
+                            fail("Add tool inputSchema should be an ObjectSchema")
+                        }
                       case None =>
                         fail("Add tool not found in tools list")
                     }
@@ -465,17 +464,22 @@ class SimpleServerSuite extends CatsEffectSuite {
                         println(s"  - ${tool.name}: ${tool.description.getOrElse("(no description)")}")
                         // Show schema for add tool
                         if tool.name == "add" then {
-                          val schemaJson = Json.fromJsonObject(tool.inputSchema)
-                          val props = schemaJson.asObject.flatMap(_("properties")).flatMap(_.asObject)
-                          props match {
-                            case Some(properties) =>
+                          tool.inputSchema match {
+                            case JsonSchemaType.ObjectSchema(Some(properties), _, _) =>
                               println(s"    Parameters:")
-                              properties.toIterable.foreach { case (name, schema) =>
-                                val desc = schema.asObject.flatMap(_("description")).flatMap(_.asString).getOrElse("")
-                                val typ = schema.asObject.flatMap(_("type")).flatMap(_.asString).getOrElse("")
+                              properties.foreach { case (name, schema) =>
+                                val (desc, typ) = schema match {
+                                  case JsonSchemaType.StringSchema(d)       => (d.getOrElse(""), "string")
+                                  case JsonSchemaType.IntegerSchema(d)      => (d.getOrElse(""), "integer")
+                                  case JsonSchemaType.NumberSchema(d)       => (d.getOrElse(""), "number")
+                                  case JsonSchemaType.BooleanSchema(d)      => (d.getOrElse(""), "boolean")
+                                  case JsonSchemaType.ArraySchema(_, d)     => (d.getOrElse(""), "array")
+                                  case JsonSchemaType.ObjectSchema(_, _, d) => (d.getOrElse(""), "object")
+                                  case JsonSchemaType.NullSchema(d)         => (d.getOrElse(""), "null")
+                                }
                                 println(s"      $name ($typ): $desc")
                               }
-                            case None =>
+                            case _ =>
                               println(s"    (no properties in schema)")
                           }
                         }

@@ -7,43 +7,27 @@ import io.circe.syntax.*
 import mcp.protocol.{Resource as ProtocolResource, *}
 import mcp.schema.McpSchema
 
-/** A tool definition with typed input and output.
+/** A tool definition with typed input and optional typed output.
   *
-  * This is an applicative data structure that contains everything needed for a tool:
-  *   - Specification (name, description, schema)
-  *   - Type-safe handler (Input => F[Output])
-  *   - Annotations
-  *
-  * The handler works with typed data structures, and JSON encoding/decoding happens automatically. The input schema is derived from the
-  * Input type using the Schema type class, which extracts field descriptions from Scaladoc comments.
+  * Create instances using:
+  *   - `ToolDef.unstructured` for tools returning content (text, images, etc.)
+  *   - `ToolDef.structured` for tools returning typed data with a schema
   *
   * @tparam F
   *   Effect type (e.g., IO)
   * @tparam Input
-  *   Input type (must have Schema instance)
+  *   Input type (must have McpSchema instance)
   * @tparam Output
-  *   Output type (must have Encoder)
-  * @param name
-  *   Unique name for the tool
-  * @param description
-  *   Human-readable description
-  * @param handler
-  *   Type-safe function to execute the tool
-  * @param annotations
-  *   Optional annotations about tool behavior
-  * @param inputSchema
-  *   Schema for input type (provides both codec and JSON schema)
-  * @param outputEncoder
-  *   Encoder for serializing output
+  *   Output type (must have McpSchema if structured, or Nothing if unstructured)
   */
-case class ToolDef[F[_], Input, Output](
+final case class ToolDef[F[_], Input, Output] private (
     name: String,
     description: Option[String],
-    handler: Input => F[Output],
+    handler: Input => F[ToolOutput[Output]],
     annotations: Option[ToolAnnotations] = None
 )(using
     val inputSchema: McpSchema[Input],
-    val outputEncoder: Encoder[Output]
+    val outputSchema: Option[McpSchema[Output]]
 ) {
 
   /** Convert to protocol Tool type for listing */
@@ -52,6 +36,7 @@ case class ToolDef[F[_], Input, Output](
       name = name,
       description = description,
       inputSchema = inputSchema.jsonSchema,
+      outputSchema = outputSchema.map(_.jsonSchema),
       annotations = annotations
     )
 
@@ -64,14 +49,9 @@ case class ToolDef[F[_], Input, Output](
 
     inputResult match {
       case Right(input) =>
-        // Execute handler and encode output
+        // Execute handler and encode output based on type
         handler(input)
-          .map { output =>
-            CallToolResult(
-              content = List(Content.Text(outputEncoder(output).dropNullValues.noSpaces)),
-              isError = Some(false)
-            )
-          }
+          .map(encodeToolOutput)
           .handleErrorWith { error =>
             F.pure(
               CallToolResult(
@@ -90,6 +70,97 @@ case class ToolDef[F[_], Input, Output](
         )
     }
   }
+
+  /** Encode ToolOutput into CallToolResult without type casting */
+  private def encodeToolOutput(output: ToolOutput[Output]): CallToolResult =
+    output match {
+      case ToolOutput.Unstructured(content) =>
+        // Return content directly for unstructured output
+        CallToolResult(
+          content = content,
+          isError = Some(false)
+        )
+      case ToolOutput.Structured(data) =>
+        outputSchema match {
+          case Some(schema) =>
+            val jsonContent = schema.encoder(data).dropNullValues
+            CallToolResult(
+              content = List(Content.Text(jsonContent.noSpaces)),
+              structuredContent = jsonContent.asObject,
+              isError = Some(false)
+            )
+          case None =>
+            // This shouldn't happen due to types, but handle gracefully
+            CallToolResult(
+              content = List(Content.Text(s"Unable to encode result: $data")),
+              isError = Some(true)
+            )
+        }
+    }
+}
+
+object ToolDef {
+
+  /** Create a tool that returns flexible content (text, images, multiple items).
+    *
+    * Use this when your tool needs to return human-readable content, potentially with mixed types (text + images), or when you don't
+    * know the exact structure in advance.
+    *
+    * Example:
+    * {{{
+    * ToolDef.unstructured[IO, SearchInput](
+    *   name = "search",
+    *   description = Some("Search the web")
+    * ) { input =>
+    *   IO.pure(List(
+    *     Content.Text("Found 3 results..."),
+    *     Content.Image(imageData, "image/png")
+    *   ))
+    * }
+    * }}}
+    */
+  def unstructured[F[_], Input](
+      name: String,
+      description: Option[String] = None,
+      annotations: Option[ToolAnnotations] = None
+  )(handler: Input => F[List[Content]])(using schema: McpSchema[Input], F: cats.Functor[F]): ToolDef[F, Input, Nothing] =
+    ToolDef[F, Input, Nothing](
+      name = name,
+      description = description,
+      handler = input => F.map(handler(input))(ToolOutput.Unstructured(_)),
+      annotations = annotations
+    )(using schema, None)
+
+  /** Create a tool that returns structured, typed data.
+    *
+    * Use this when your tool returns predictable, machine-readable data that clients can parse and process programmatically (e.g.,
+    * calculations, structured queries, data transformations).
+    *
+    * Example:
+    * {{{
+    * ToolDef.structured[IO, AddInput, AddOutput](
+    *   name = "add",
+    *   description = Some("Add two numbers")
+    * ) { input =>
+    *   IO.pure(AddOutput(result = input.a + input.b))
+    * }
+    * }}}
+    */
+  def structured[F[_], Input, Output](
+      name: String,
+      description: Option[String] = None,
+      annotations: Option[ToolAnnotations] = None
+  )(handler: Input => F[Output])(using
+      inputSchema: McpSchema[Input],
+      outputSchema: McpSchema[Output],
+      F: cats.Functor[F]
+  ): ToolDef[F, Input, Output] =
+    ToolDef[F, Input, Output](
+      name = name,
+      description = description,
+      handler = input => F.map(handler(input))(ToolOutput.Structured(_)),
+      annotations = annotations
+    )(using inputSchema, Some(outputSchema))
 }
 
 /** A resource definition with typed output.
