@@ -190,6 +190,9 @@ private class McpServerImpl[F[_]: Async](
       case "initialize" =>
         handleInitialize(params)
 
+      case "ping" =>
+        handlePing()
+
       case "tools/list" =>
         withCapabilities(caps => handleListTools(params, caps))
 
@@ -267,6 +270,12 @@ private class McpServerImpl[F[_]: Async](
           )
         )
     }
+  }
+
+  /** Handle ping request - respond immediately with empty result */
+  private def handlePing(): F[Either[ErrorData, JsonObject]] = {
+    val result = EmptyResult()
+    Async[F].pure(Right(result.asJsonObject))
   }
 
   private def handleListTools(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {

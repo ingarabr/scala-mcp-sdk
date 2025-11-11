@@ -158,6 +158,40 @@ class SimpleServerSuite extends CatsEffectSuite {
     }
   }
 
+  test("ping should respond immediately") {
+    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
+      val serverResource = McpServer[IO](
+        info = Implementation("test-server", "1.0.0")
+      )
+
+      serverResource.use { server =>
+        val serverFiber = server.serve(transport).start
+
+        serverFiber.flatMap { fiber =>
+          val test = for {
+            // Send ping request
+            response <- sendRequest(clientToServer, serverToClient, "ping", None)
+
+            // Verify response is EmptyResult
+            _ = response match {
+              case JsonRpcResponse.Response(_, _, result) =>
+                val emptyResult = result.asJson.as[EmptyResult]
+                assert(emptyResult.isRight, s"Failed to decode EmptyResult: $emptyResult")
+              case other =>
+                fail(s"Expected Response, got: $other")
+            }
+
+            // Signal end of stream
+            _ <- clientToServer.offer(None)
+            _ <- fiber.join
+          } yield ()
+
+          test
+        }
+      }
+    }
+  }
+
   test("tools/list should return all registered tools") {
     TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
       val serverResource = McpServer[IO](
