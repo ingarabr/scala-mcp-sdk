@@ -103,8 +103,8 @@ object ToolDef {
 
   /** Create a tool that returns flexible content (text, images, multiple items).
     *
-    * Use this when your tool needs to return human-readable content, potentially with mixed types (text + images), or when you don't
-    * know the exact structure in advance.
+    * Use this when your tool needs to return human-readable content, potentially with mixed types (text + images), or when you don't know
+    * the exact structure in advance.
     *
     * Example:
     * {{{

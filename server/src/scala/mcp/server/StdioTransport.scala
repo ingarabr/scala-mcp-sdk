@@ -12,64 +12,43 @@ import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse}
 
 /** Transport implementation using standard input/output.
   *
-  * This transport reads newline-delimited JSON from stdin and writes to stdout. It's the standard transport for command-line MCP servers.
-  *
-  * Messages are:
-  *   - Read from stdin, one JSON object per line
-  *   - Written to stdout, one JSON object per line
-  *   - Encoded/decoded using Circe
-  *
-  * @param inQueue
-  *   Queue for incoming messages parsed from stdin
+  * Reads newline-delimited JSON from stdin and writes to stdout. Standard transport for command-line MCP servers.
   */
 class StdioTransport[F[_]: Async] private (
-    inQueue: Queue[F, Option[JsonRpcRequest]]
+    inQueue: Queue[F, Option[JsonRpcRequest]],
+    outQueue: Queue[F, Option[JsonRpcResponse]]
 ) extends Transport[F] {
 
-  /** Stream of incoming requests from stdin.
-    *
-    * Reads lines from stdin, parses them as JSON-RPC requests, and emits them. Invalid JSON or malformed messages are logged to stderr but
-    * don't stop the stream.
-    */
   def receive: Stream[F, JsonRpcRequest] =
     Stream.fromQueueNoneTerminated(inQueue)
 
-  /** Send a response to stdout.
-    *
-    * Serializes the response to JSON and writes it to stdout with a newline.
-    */
-  def send(message: JsonRpcResponse): F[Unit] = {
-    val json = message.asJson.deepDropNullValues.noSpaces ++ "\n"
-    val bytes = json.getBytes("UTF-8")
-    Stream
-      .chunk(fs2.Chunk.array(bytes))
-      .through(stdout[F])
-      .compile
-      .drain
-  }
+  def send(message: JsonRpcResponse): F[Unit] =
+    outQueue.offer(Some(message))
 }
 
 object StdioTransport {
 
   /** Create a stdio transport.
     *
-    * This starts a background fiber that:
-    *   - Reads lines from stdin
-    *   - Parses them as JSON-RPC requests
-    *   - Enqueues valid requests
-    *   - Sends JSON-RPC error responses for invalid messages (per spec)
-    *
     * @param chunkSize
     *   Size of chunks to read from stdin
-    * @return
-    *   Resource managing the transport and background fiber
+    * @param outboundQueueSize
+    *   Maximum size of outbound message queue. None for unbounded. Bounded queues provide backpressure.
     */
-  def apply[F[_]: Async](chunkSize: Int = 4096): cats.effect.Resource[F, StdioTransport[F]] =
+  def apply[F[_]: Async](
+      chunkSize: Int = 4096,
+      outboundQueueSize: Option[Int] = None
+  ): cats.effect.Resource[F, StdioTransport[F]] =
     for {
-      queue <- cats.effect.Resource.eval(Queue.unbounded[F, Option[JsonRpcRequest]])
-      transport = new StdioTransport[F](queue)
+      inQueue <- cats.effect.Resource.eval(Queue.unbounded[F, Option[JsonRpcRequest]])
+      outQueue <- cats.effect.Resource.eval(
+        outboundQueueSize match {
+          case Some(size) => Queue.bounded[F, Option[JsonRpcResponse]](size)
+          case None       => Queue.unbounded[F, Option[JsonRpcResponse]]
+        }
+      )
+      transport = new StdioTransport[F](inQueue, outQueue)
 
-      // Background fiber to read from stdin and parse messages
       _ <- stdin[F](chunkSize)
         .through(text.utf8.decode)
         .through(text.lines)
@@ -78,7 +57,7 @@ object StdioTransport {
             case Right(json) =>
               json.as[JsonRpcRequest] match {
                 case Right(request) =>
-                  queue.offer(Some(request))
+                  inQueue.offer(Some(request))
 
                 case Left(decodeError) =>
                   transport.send(
@@ -98,7 +77,7 @@ object StdioTransport {
               transport.send(
                 JsonRpcResponse.Error(
                   jsonrpc = Constants.JSONRPC_VERSION,
-                  id = None, // Per JSON-RPC spec: id MUST be null for parse errors
+                  id = None,
                   error = ErrorData(
                     code = Constants.PARSE_ERROR,
                     message = "Parse error",
@@ -108,9 +87,26 @@ object StdioTransport {
               )
           }
         }
-        .onFinalize(queue.offer(None)) // Signal end of stream
+        .onFinalize(inQueue.offer(None))
         .compile
         .drain
         .background
+
+      _ <- Stream
+        .fromQueueNoneTerminated(outQueue)
+        .evalMap { message =>
+          val json = message.asJson.deepDropNullValues.noSpaces ++ "\n"
+          val bytes = json.getBytes("UTF-8")
+          Stream
+            .chunk(fs2.Chunk.array(bytes))
+            .through(stdout[F])
+            .compile
+            .drain
+        }
+        .compile
+        .drain
+        .background
+
+      _ <- cats.effect.Resource.onFinalize(outQueue.offer(None))
     } yield transport
 }

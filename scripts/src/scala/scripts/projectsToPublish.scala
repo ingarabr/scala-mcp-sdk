@@ -9,6 +9,6 @@ object projectsToPublish {
       case "schemas"       => true
       case "server"        => true
       case "server-http4s" => true
-      case _                 => false
+      case _               => false
     }
 }
