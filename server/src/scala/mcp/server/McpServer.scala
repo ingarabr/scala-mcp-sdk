@@ -158,7 +158,7 @@ private class McpServerImpl[F[_]: Async](
 
       case JsonRpcRequest.Notification(_, method, params) =>
         // Notifications don't get responses per JSON-RPC 2.0 spec
-        handleNotification(method, params).as(None)
+        handleNotification(method).as(None)
     }
 
   /** Extract capabilities from connection state and pass to handler.
@@ -194,19 +194,19 @@ private class McpServerImpl[F[_]: Async](
         handlePing()
 
       case "tools/list" =>
-        withCapabilities(caps => handleListTools(params, caps))
+        withCapabilities(_ => handleListTools())
 
       case "tools/call" =>
         withCapabilities(caps => handleCallTool(params, caps))
 
       case "resources/list" =>
-        withCapabilities(caps => handleListResources(params, caps))
+        withCapabilities(_ => handleListResources())
 
       case "resources/read" =>
         withCapabilities(caps => handleReadResource(params, caps))
 
       case "prompts/list" =>
-        withCapabilities(caps => handleListPrompts(params, caps))
+        withCapabilities(_ => handleListPrompts())
 
       case "prompts/get" =>
         withCapabilities(caps => handleGetPrompt(params, caps))
@@ -223,7 +223,7 @@ private class McpServerImpl[F[_]: Async](
     }
 
   /** Handle notifications (fire and forget) */
-  private def handleNotification(method: String, params: Option[JsonObject]): F[Unit] =
+  private def handleNotification(method: String): F[Unit] =
     method match {
       case "initialized" =>
         // Transition from Initialized to Operational state
@@ -278,7 +278,7 @@ private class McpServerImpl[F[_]: Async](
     Async[F].pure(Right(result.asJsonObject))
   }
 
-  private def handleListTools(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
+  private def handleListTools(): F[Either[ErrorData, JsonObject]] = {
     val result = ListToolsResult(tools = toolsMap.values.map(_.toTool).toList)
     Async[F].pure(Right(result.asJsonObject))
   }
@@ -313,7 +313,7 @@ private class McpServerImpl[F[_]: Async](
     }
   }
 
-  private def handleListResources(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
+  private def handleListResources(): F[Either[ErrorData, JsonObject]] = {
     val result = ListResourcesResult(resources = resourcesMap.values.map(_.toResource).toList)
     Async[F].pure(Right(result.asJsonObject))
   }
@@ -348,7 +348,7 @@ private class McpServerImpl[F[_]: Async](
     }
   }
 
-  private def handleListPrompts(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
+  private def handleListPrompts(): F[Either[ErrorData, JsonObject]] = {
     val result = ListPromptsResult(prompts = promptsMap.values.map(_.toPrompt).toList)
     Async[F].pure(Right(result.asJsonObject))
   }
