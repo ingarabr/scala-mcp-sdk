@@ -141,7 +141,12 @@ object McpHttpRoutes {
           case Right(headers) =>
             headers.sessionId match {
               case Some(sessionId) =>
-                sessionManager.removeSession(Some(sessionId)) >> NoContent()
+                sessionManager.removeSession(Some(sessionId)).attempt.flatMap {
+                  case Right(_) =>
+                    Ok(Json.obj("status" -> Json.fromString("session_terminated")).deepDropNullValues.noSpaces)
+                  case Left(error) =>
+                    jsonRpcError[F](None, Constants.INTERNAL_ERROR, s"Failed to remove session: ${error.getMessage}")
+                }
               case None =>
                 jsonRpcError[F](None, Constants.INVALID_REQUEST, "Missing Mcp-Session-Id header")
             }
@@ -215,34 +220,45 @@ object McpHttpRoutes {
           Async[F].pure(req)
       }
 
-      _ <- sessionManager.enqueueRequest(sessionId, jsonRpcReq)
-      sessionStateOpt <- sessionManager.getSession(sessionId)
-
-      response <- sessionStateOpt match {
-        case Some(sessionState) =>
-          val jsonStream = Stream
-            .fromQueueNoneTerminated(sessionState.postResponseQueue)
-            .take(1) // Take single response for this POST request
-            .evalMap { msg =>
-              val json = msg match {
-                case ServerMessage.Response(r)     => r.asJson
-                case ServerMessage.Request(r)      => r.asJson
-                case ServerMessage.Notification(n) => n.asJson
-              }
-              Async[F].pure(json.deepDropNullValues.noSpaces)
-            }
-            .through(fs2.text.utf8.encode)
-
-          Ok(
-            jsonStream,
-            `Content-Type`(MediaType.application.json),
-            `Cache-Control`(CacheDirective.`no-cache`()),
-            Connection(ci"keep-alive")
-          )
-
-        case None =>
-          Async[F].raiseError(new Exception("Session not found"))
+      // Check if this is a notification (no id) or request (has id)
+      isNotification = jsonRpcReq match {
+        case JsonRpcRequest.Notification(_, _, _) => true
+        case JsonRpcRequest.Request(_, _, _, _)   => false
       }
+
+      _ <- sessionManager.enqueueRequest(sessionId, jsonRpcReq)
+
+      response <-
+        if isNotification then
+          // Notifications get 202 Accepted with empty JSON object
+          Accepted(Json.obj().deepDropNullValues.noSpaces, `Content-Type`(MediaType.application.json))
+        else
+          // Requests need to wait for response from queue
+          sessionManager.getSession(sessionId).flatMap {
+            case Some(sessionState) =>
+              val jsonStream = Stream
+                .fromQueueNoneTerminated(sessionState.postResponseQueue)
+                .take(1) // Take single response for this POST request
+                .evalMap { msg =>
+                  val json = msg match {
+                    case ServerMessage.Response(r)     => r.asJson
+                    case ServerMessage.Request(r)      => r.asJson
+                    case ServerMessage.Notification(n) => n.asJson
+                  }
+                  Async[F].pure(json.deepDropNullValues.noSpaces)
+                }
+                .through(fs2.text.utf8.encode)
+
+              Ok(
+                jsonStream,
+                `Content-Type`(MediaType.application.json),
+                `Cache-Control`(CacheDirective.`no-cache`()),
+                Connection(ci"keep-alive")
+              )
+
+            case None =>
+              Async[F].raiseError(new Exception("Session not found"))
+          }
     } yield response
 
     result.handleErrorWith { error =>

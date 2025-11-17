@@ -461,19 +461,12 @@ class SimpleServerSuite extends CatsEffectSuite {
           )
           val test = for {
             // Step 1: LLM initializes connection
-            _ <- IO.println("\n=== Step 1: LLM initializes MCP connection ===")
             initResponse <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
             _ = initResponse match {
               case JsonRpcResponse.Response(_, _, result) =>
                 result.asJson.as[InitializeResult].toOption match {
-                  case Some(initResult) =>
-                    println(s"✓ Connected to: ${initResult.serverInfo.name} v${initResult.serverInfo.version}")
-                    println(s"  Protocol version: ${initResult.protocolVersion}")
-                    println(
-                      s"  Capabilities: tools=${initResult.capabilities.tools.isDefined}, " +
-                        s"resources=${initResult.capabilities.resources.isDefined}, prompts=${initResult.capabilities.prompts.isDefined}"
-                    )
-                  case None =>
+                  case Some(_) => ()
+                  case None    =>
                     fail(s"Failed to decode InitializeResult from: $result")
                 }
               case other => fail(s"Unexpected response: $other")
@@ -485,52 +478,19 @@ class SimpleServerSuite extends CatsEffectSuite {
             )
 
             // Step 2: LLM discovers available tools
-            _ <- IO.println("\n=== Step 2: LLM discovers available tools ===")
             toolsResponse <- sendRequest(clientToServer, serverToClient, "tools/list")
-            _ <- IO {
-              toolsResponse match {
-                case JsonRpcResponse.Response(_, _, result) =>
-                  val decodeAttempt = result.asJson.as[ListToolsResult]
-                  decodeAttempt match {
-                    case Right(toolsResult) =>
-                      println(s"✓ Found ${toolsResult.tools.length} tools:")
-                      toolsResult.tools.foreach { tool =>
-                        println(s"  - ${tool.name}: ${tool.description.getOrElse("(no description)")}")
-                        // Show schema for add tool
-                        if tool.name == "add" then {
-                          tool.inputSchema match {
-                            case JsonSchemaType.ObjectSchema(Some(properties), _, _) =>
-                              println(s"    Parameters:")
-                              properties.foreach { case (name, schema) =>
-                                val (desc, typ) = schema match {
-                                  case JsonSchemaType.StringSchema(d)       => (d.getOrElse(""), "string")
-                                  case JsonSchemaType.IntegerSchema(d)      => (d.getOrElse(""), "integer")
-                                  case JsonSchemaType.NumberSchema(d)       => (d.getOrElse(""), "number")
-                                  case JsonSchemaType.BooleanSchema(d)      => (d.getOrElse(""), "boolean")
-                                  case JsonSchemaType.ArraySchema(_, d)     => (d.getOrElse(""), "array")
-                                  case JsonSchemaType.ObjectSchema(_, _, d) => (d.getOrElse(""), "object")
-                                  case JsonSchemaType.NullSchema(d)         => (d.getOrElse(""), "null")
-                                }
-                                println(s"      $name ($typ): $desc")
-                              }
-                            case _ =>
-                              println(s"    (no properties in schema)")
-                          }
-                        }
-                      }
-                    case Left(err) =>
-                      fail(s"Failed to decode ListToolsResult. Error: $err, Raw result: ${result.asJson.spaces2}")
-                  }
-                case other => fail(s"Unexpected response: $other")
-              }
+            _ = toolsResponse match {
+              case JsonRpcResponse.Response(_, _, result) =>
+                result.asJson.as[ListToolsResult] match {
+                  case Right(_)  => ()
+                  case Left(err) =>
+                    fail(s"Failed to decode ListToolsResult. Error: $err, Raw result: ${result.asJson.spaces2}")
+                }
+              case other => fail(s"Unexpected response: $other")
             }
 
             // Step 3: User asks "What is 42 + 17?"
-            _ <- IO.println("\n=== Step 3: User asks 'What is 42 + 17?' ===")
-            _ <- IO.println("LLM decides to use the 'add' tool with a=42, b=17, c=0")
-
             // Step 4: LLM calls the add tool
-            _ <- IO.println("\n=== Step 4: LLM calls tools/call with add tool ===")
             addRequest = CallToolRequest(
               name = "add",
               arguments = Some(
@@ -548,12 +508,10 @@ class SimpleServerSuite extends CatsEffectSuite {
                   case Some(callResult) =>
                     assert(callResult.isError.contains(false), "Tool execution should succeed")
                     val textContent = callResult.content.head.asInstanceOf[Content.Text].text
-                    println(s"✓ Tool returned: $textContent")
                     parse(textContent).toOption match {
                       case Some(outputJson) =>
                         outputJson.hcursor.get[Double]("result").toOption match {
                           case Some(resultValue) =>
-                            println(s"  Extracted result: $resultValue")
                             assertEquals(resultValue, 59.0, "42 + 17 should equal 59")
                           case None =>
                             fail(s"Failed to extract 'result' field from: $outputJson")
@@ -566,10 +524,6 @@ class SimpleServerSuite extends CatsEffectSuite {
                 }
               case other => fail(s"Unexpected response: $other")
             }
-
-            // Step 5: LLM formulates response to user
-            _ <- IO.println("\n=== Step 5: LLM formulates final response ===")
-            _ <- IO.println("LLM: The answer to 42 + 17 is 59.")
 
             // Cleanup
             _ <- clientToServer.offer(None)
@@ -594,19 +548,15 @@ class SimpleServerSuite extends CatsEffectSuite {
 
         serverFiber.flatMap { fiber =>
           val test = for {
-            _ <- IO.println("\n=== Simulating LLM reading server configuration ===")
             _ <- initializeServer(clientToServer, serverToClient)
 
             // Step 1: LLM lists available resources
-            _ <- IO.println("Step 1: LLM discovers resources")
             resourcesResponse <- sendRequest(clientToServer, serverToClient, "resources/list")
             resourceUri <- IO {
               resourcesResponse match {
                 case JsonRpcResponse.Response(_, _, result) =>
                   result.asJson.as[ListResourcesResult].toOption match {
                     case Some(resourcesResult) if resourcesResult.resources.nonEmpty =>
-                      println(s"✓ Found resource: ${resourcesResult.resources.head.name}")
-                      println(s"  URI: ${resourcesResult.resources.head.uri}")
                       resourcesResult.resources.head.uri
                     case Some(_) =>
                       fail("No resources found in response")
@@ -618,7 +568,6 @@ class SimpleServerSuite extends CatsEffectSuite {
             }
 
             // Step 2: LLM reads the specific resource
-            _ <- IO.println("\nStep 2: LLM reads resource content")
             readRequest = ReadResourceRequest(uri = resourceUri)
             readResponse <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readRequest.asJsonObject))
             _ = readResponse match {
@@ -626,8 +575,6 @@ class SimpleServerSuite extends CatsEffectSuite {
                 result.asJson.as[ReadResourceResult].toOption match {
                   case Some(readResult) if readResult.contents.nonEmpty =>
                     val content = readResult.contents.head.asInstanceOf[ResourceContents.Text]
-                    println(s"✓ Resource content:")
-                    println(s"  ${content.text}")
                     assert(content.text.contains("simple-server"), "Should contain server name")
                     assert(content.text.contains("1.0.0"), "Should contain version")
                   case Some(_) =>
@@ -660,11 +607,9 @@ class SimpleServerSuite extends CatsEffectSuite {
 
         serverFiber.flatMap { fiber =>
           val test = for {
-            _ <- IO.println("\n=== Simulating LLM using greeting prompt ===")
             _ <- initializeServer(clientToServer, serverToClient)
 
             // Step 1: Get the prompt with arguments
-            _ <- IO.println("Step 1: LLM retrieves greeting prompt for user 'Alice'")
             promptRequest = GetPromptRequest(
               name = "greeting",
               arguments = Some(JsonObject("name" -> Json.fromString("Alice")))
@@ -674,10 +619,8 @@ class SimpleServerSuite extends CatsEffectSuite {
               case JsonRpcResponse.Response(_, _, result) =>
                 result.asJson.as[GetPromptResult].toOption match {
                   case Some(promptResult) =>
-                    println(s"✓ Prompt generated ${promptResult.messages.length} message(s)")
                     promptResult.messages.foreach { msg =>
                       val text = msg.content.asInstanceOf[Content.Text].text
-                      println(s"  [${msg.role}]: $text")
                       assert(text.contains("Alice"), "Greeting should include the name")
                     }
                   case None =>

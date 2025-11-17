@@ -284,9 +284,8 @@ private class HttpSessionManager[F[_]: Async](
         sessionsRef.get.flatMap { sessions =>
           sessions.toList.traverse { case (sessionId, state) =>
             val idleDuration = java.time.Duration.between(state.lastActivity, now)
-            if idleDuration.toMillis > idleTimeout.toMillis then
-              // Session timed out - remove it
-              removeSession(sessionId)
+            if idleDuration.toMillis > idleTimeout.toMillis
+            then removeSession(sessionId)
             else Async[F].unit
           }
         }

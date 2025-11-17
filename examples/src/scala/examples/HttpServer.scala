@@ -12,6 +12,8 @@ import examples.tools.{AddTool, EchoTool}
 import examples.resources.ServerConfigResource
 import examples.prompts.GreetingPrompt
 
+import scala.concurrent.duration.*
+
 /** HTTP server example using session-based HTTP/SSE transport.
   *
   * Run with: bleep run examples@HttpServer
@@ -29,7 +31,15 @@ object HttpServer extends IOApp {
 
     serverResource.use { mcpServer =>
       for {
+        // Create session manager
         sessionManager <- SessionManager[IO]()
+
+        // Start background cleanup of idle sessions
+        _ <- sessionManager.startCleanup(
+          idleTimeout = 30.minutes, // Remove sessions idle for 30 minutes
+          checkInterval = 5.minutes // Check every 5 minutes
+        )
+
         routes = McpHttpRoutes.routes[IO](
           server = mcpServer,
           sessionManager = sessionManager,
@@ -52,14 +62,17 @@ object HttpServer extends IOApp {
           .build
 
         // Start server
-        exitCode <- IO.println("🚀 HTTP MCP Server starting...") *>
-          IO.println("   Endpoint: http://localhost:8080/mcp") *>
-          IO.println("   Mode: Session-based (multi-client)") *>
-          IO.println("   Features:") *>
-          IO.println("     - POST /mcp: Initialize and send requests") *>
-          IO.println("     - GET /mcp: Persistent SSE stream") *>
-          IO.println("     - DELETE /mcp: Terminate session") *>
-          IO.println("   Press Ctrl+C to stop") *>
+        exitCode <- IO.println("""
+          |🚀 HTTP MCP Server starting...
+          |   Endpoint: http://localhost:8080/mcp
+          |   Mode: Session-based (multi-client)
+          |   Features:
+          |     - POST /mcp: Initialize and send requests
+          |     - GET /mcp: Persistent SSE stream
+          |     - DELETE /mcp: Terminate session
+          |   Session timeout: 30 minutes (checked every 5 minutes)
+          |   Press Ctrl+C to stop
+          |""".stripMargin) *>
           httpServer.use(_ => IO.never).as(ExitCode.Success)
       } yield exitCode
     }
