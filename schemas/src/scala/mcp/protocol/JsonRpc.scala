@@ -1,5 +1,6 @@
 package mcp.protocol
 
+import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
 import io.circe.generic.semiauto.*
@@ -50,6 +51,14 @@ object Constants {
 enum JsonRpcRequest {
   case Request(jsonrpc: String, id: RequestId, method: String, params: Option[JsonObject])
   case Notification(jsonrpc: String, method: String, params: Option[JsonObject])
+
+  def fromParam[A](using Decoder[A]): Either[Throwable, A] =
+    (this match {
+      case r: JsonRpcRequest.Request      => r.params
+      case r: JsonRpcRequest.Notification => r.params
+    }).toRight(new Exception("Missing param"))
+      .flatMap(o => Decoder[A].decodeJson(o.toJson))
+
 }
 
 object JsonRpcRequest {
