@@ -2,7 +2,7 @@ package mcp.http4s.session
 
 import cats.effect.IO
 import cats.syntax.all.*
-import mcp.protocol.Implementation
+import mcp.protocol.{Constants, Implementation, JsonRpcResponse}
 import mcp.server.McpServer
 import munit.CatsEffectSuite
 
@@ -22,9 +22,16 @@ class SessionManagerTest extends CatsEffectSuite {
       prompts = Nil
     ).allocated.map(_._1)
 
+  /** Create a test notification message. */
+  private def testNotification() = JsonRpcResponse.Notification(
+    jsonrpc = Constants.JSONRPC_VERSION,
+    method = "test/notification",
+    params = None
+  )
+
   test("createSession in session-based mode generates unique IDs") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id1 <- manager.createSession(sessionBased = true, server)
       id2 <- manager.createSession(sessionBased = true, server)
@@ -37,7 +44,7 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("createSession in sessionless mode returns None") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = false, server)
     } yield assert(id.isEmpty, "Sessionless mode should return None")
@@ -45,7 +52,7 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("getSession returns state for existing session") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
       state <- manager.getSession(id)
@@ -58,7 +65,7 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("getSession returns None for non-existent session") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       state <- manager.getSession(Some(SessionId.fromString("non-existent")))
     } yield assert(state.isEmpty, "Should not find non-existent session")
   }
@@ -67,7 +74,7 @@ class SessionManagerTest extends CatsEffectSuite {
     import mcp.protocol.*
 
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
       caps = ClientCapabilities(
@@ -86,7 +93,7 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("updateActivity updates lastActivity timestamp") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
       state1 <- manager.getSession(id)
@@ -104,11 +111,11 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("appendEvent assigns sequential event IDs") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
-      msg1 = ServerMessage.Notification(null) // simplified for test
-      msg2 = ServerMessage.Notification(null)
+      msg1 = testNotification()
+      msg2 = testNotification()
       eventId1 <- manager.appendEvent(id, msg1)
       eventId2 <- manager.appendEvent(id, msg2)
     } yield {
@@ -119,12 +126,12 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("getEventsSince returns events after given ID") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
-      msg1 = ServerMessage.Notification(null)
-      msg2 = ServerMessage.Notification(null)
-      msg3 = ServerMessage.Notification(null)
+      msg1 = testNotification()
+      msg2 = testNotification()
+      msg3 = testNotification()
       eventId1 <- manager.appendEvent(id, msg1)
       eventId2 <- manager.appendEvent(id, msg2)
       eventId3 <- manager.appendEvent(id, msg3)
@@ -138,11 +145,11 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("event log is bounded by eventLogSize") {
     for {
-      manager <- SessionManager[IO](eventLogSize = 3)
+      manager <- SessionManager.withoutCleanup[IO](eventLogSize = 3)
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
       _ <- (1 to 5).toList.traverse { _ =>
-        manager.appendEvent(id, ServerMessage.Notification(null))
+        manager.appendEvent(id, testNotification())
       }
       state <- manager.getSession(id)
     } yield {
@@ -155,7 +162,7 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("removeSession cleans up session") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
       _ <- manager.removeSession(id)
@@ -165,11 +172,11 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("enqueuePostResponse and enqueuePersistent add messages to queues") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
       state <- manager.getSession(id)
-      msg = ServerMessage.Notification(null)
+      msg = testNotification()
       _ <- manager.enqueuePostResponse(id, msg)
       _ <- manager.enqueuePersistent(id, msg)
       postMsg <- state.get.postResponseQueue.take
@@ -184,7 +191,7 @@ class SessionManagerTest extends CatsEffectSuite {
     import io.circe.*
 
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id1 <- manager.createSession(sessionBased = true, server)
       id2 <- manager.createSession(sessionBased = true, server)
@@ -208,7 +215,7 @@ class SessionManagerTest extends CatsEffectSuite {
 
   test("sessionless mode (None ID) works correctly") {
     for {
-      manager <- SessionManager[IO]()
+      manager <- SessionManager.withoutCleanup[IO]()
       server <- createTestServer()
       id <- manager.createSession(sessionBased = false, server)
       state1 <- manager.getSession(None)

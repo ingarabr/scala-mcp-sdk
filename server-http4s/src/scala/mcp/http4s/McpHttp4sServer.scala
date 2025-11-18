@@ -57,7 +57,7 @@ object McpHttp4sServer {
     for {
       // Queue for requests from client to server (received via POST)
       incomingQueue <- CatsResource.eval(Queue.bounded[F, Option[JsonRpcRequest]](queueSize))
-      // Queue for responses from server to client (sent via SSE)
+      // Queue for messages from server to client (sent via SSE) - includes responses and notifications
       outgoingQueue <- CatsResource.eval(Queue.bounded[F, Option[JsonRpcResponse]](queueSize))
       // Track active SSE connections
       connectionCount <- CatsResource.eval(Ref.of[F, Int](0))
@@ -94,7 +94,7 @@ class McpHttp4sServer[F[_]: Async](
       val stream = Stream
         .fromQueueNoneTerminated(outgoingQueue)
         .map { message =>
-          // Format as SSE event
+          // Serialize message to JSON and format as SSE event
           val data = message.asJson.deepDropNullValues.noSpaces
           s"event: message\ndata: $data\n\n"
         }
@@ -120,35 +120,29 @@ class McpHttp4sServer[F[_]: Async](
               incomingQueue.offer(Some(request)) >> Accepted()
 
             case Left(decodeError) =>
-              outgoingQueue.offer(
-                Some(
-                  JsonRpcResponse.Error(
-                    jsonrpc = Constants.JSONRPC_VERSION,
-                    id = None,
-                    error = ErrorData(
-                      code = Constants.INVALID_REQUEST,
-                      message = "Invalid Request",
-                      data = Some(Json.fromString(decodeError.getMessage))
-                    )
-                  )
-                )
-              ) >> Accepted()
-          }
-        }
-        .handleErrorWith { parseError =>
-          outgoingQueue.offer(
-            Some(
-              JsonRpcResponse.Error(
+              val errorResponse = JsonRpcResponse.Error(
                 jsonrpc = Constants.JSONRPC_VERSION,
                 id = None,
                 error = ErrorData(
-                  code = Constants.PARSE_ERROR,
-                  message = "Parse error",
-                  data = Some(Json.fromString(parseError.getMessage))
+                  code = Constants.INVALID_REQUEST,
+                  message = "Invalid Request",
+                  data = Some(Json.fromString(decodeError.getMessage))
                 )
               )
+              outgoingQueue.offer(Some(errorResponse)) >> Accepted()
+          }
+        }
+        .handleErrorWith { parseError =>
+          val errorResponse = JsonRpcResponse.Error(
+            jsonrpc = Constants.JSONRPC_VERSION,
+            id = None,
+            error = ErrorData(
+              code = Constants.PARSE_ERROR,
+              message = "Parse error",
+              data = Some(Json.fromString(parseError.getMessage))
             )
-          ) >> Accepted()
+          )
+          outgoingQueue.offer(Some(errorResponse)) >> Accepted()
         }
   }
 

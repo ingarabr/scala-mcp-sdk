@@ -119,7 +119,7 @@ private class McpServerImpl[F[_]: Async](
 
   def serve(transport: Transport[F]): F[Unit] =
     transport.receive
-      .evalMap(handleMessage)
+      .evalMap(handleMessage(_, transport))
       .collect { case Some(msg) => msg }
       .foreach(response => transport.send(response))
       .compile
@@ -129,28 +129,26 @@ private class McpServerImpl[F[_]: Async](
     *
     * Returns None for notifications (which should not receive responses per JSON-RPC spec).
     */
-  private def handleMessage(message: JsonRpcRequest): F[Option[JsonRpcResponse]] =
+  private def handleMessage(message: JsonRpcRequest, transport: Transport[F]): F[Option[JsonRpcResponse]] =
     message match {
       case JsonRpcRequest.Request(jsonrpc, id, method, params) =>
-        handleRequest(method, params)
+        handleRequest(method, params, transport)
           .map {
             case Right(result) =>
               Some(JsonRpcResponse.Response(jsonrpc, id, result))
             case Left(errorData) =>
               Some(JsonRpcResponse.Error(jsonrpc, Some(id), errorData))
           }
-          .handleErrorWith { error =>
+          .handleError { error =>
             // Catch-all for unexpected exceptions
-            Async[F].pure(
-              Some(
-                JsonRpcResponse.Error(
-                  jsonrpc,
-                  Some(id),
-                  ErrorData(
-                    code = Constants.INTERNAL_ERROR,
-                    message = error.getMessage,
-                    data = None
-                  )
+            Some(
+              JsonRpcResponse.Error(
+                jsonrpc,
+                Some(id),
+                ErrorData(
+                  code = Constants.INTERNAL_ERROR,
+                  message = error.getMessage,
+                  data = None
                 )
               )
             )
@@ -185,7 +183,7 @@ private class McpServerImpl[F[_]: Async](
     }
 
   /** Handle a request and return either an error or the result */
-  private def handleRequest(method: String, params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] =
+  private def handleRequest(method: String, params: Option[JsonObject], transport: Transport[F]): F[Either[ErrorData, JsonObject]] =
     method match {
       case "initialize" =>
         handleInitialize(params)
@@ -197,7 +195,7 @@ private class McpServerImpl[F[_]: Async](
         withCapabilities(_ => handleListTools())
 
       case "tools/call" =>
-        withCapabilities(caps => handleCallTool(params, caps))
+        withCapabilities(caps => handleCallTool(params, transport, caps))
 
       case "resources/list" =>
         withCapabilities(_ => handleListResources())
@@ -283,13 +281,30 @@ private class McpServerImpl[F[_]: Async](
     Async[F].pure(Right(result.asJsonObject))
   }
 
-  private def handleCallTool(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
-    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+  private def handleCallTool(
+      params: Option[JsonObject],
+      transport: Transport[F],
+      capabilities: ClientCapabilities
+  ): F[Either[ErrorData, JsonObject]] = {
+    val paramsObj = params.getOrElse(JsonObject.empty)
+    val paramsJson = paramsObj.asJson
+
+    // Extract progress token from _meta.progressToken if present
+    val progressToken: Option[ProgressToken] = paramsObj("_meta")
+      .flatMap(_.asObject)
+      .flatMap(_("progressToken"))
+      .flatMap(_.as[ProgressToken].toOption)
+
+    // TODO: Extract minimum log level from connection state
+    val minLogLevel: Option[LoggingLevel] = None
+
+    val context = ToolContextImpl[F](transport, progressToken, minLogLevel)
+
     paramsJson.as[CallToolRequest] match {
       case Right(request) =>
         toolsMap.get(request.name) match {
           case Some(toolDef) =>
-            toolDef.execute(request.arguments).map(result => Right(result.asJsonObject))
+            toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
           case None =>
             Async[F].pure(
               Left(
@@ -361,25 +376,11 @@ private class McpServerImpl[F[_]: Async](
           case Some(promptDef) =>
             promptDef.get(request.arguments).map(result => Right(result.asJsonObject))
           case None =>
-            Async[F].pure(
-              Left(
-                ErrorData(
-                  code = Constants.INVALID_PARAMS,
-                  message = s"Prompt not found: ${request.name}"
-                )
-              )
-            )
+            Async[F].pure(Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Prompt not found: ${request.name}")))
         }
 
       case Left(error) =>
-        Async[F].pure(
-          Left(
-            ErrorData(
-              code = Constants.INVALID_PARAMS,
-              message = s"Invalid get prompt request: ${error.getMessage}"
-            )
-          )
-        )
+        Async[F].pure(Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid get prompt request: ${error.getMessage}")))
     }
   }
 }

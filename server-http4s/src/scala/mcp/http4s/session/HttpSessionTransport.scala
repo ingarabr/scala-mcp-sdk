@@ -24,16 +24,25 @@ class HttpSessionTransport[F[_]: Async](
   def receive: Stream[F, JsonRpcRequest] =
     Stream.fromQueueNoneTerminated(requestQueue)
 
-  /** Send response to client.
+  /** Send response (or notification) to client.
     *
-    * Responses go to both POST response stream and persistent GET stream.
+    * Responses and errors go to both POST response stream and persistent GET stream. Notifications only go to persistent GET stream (not
+    * POST response).
     */
   def send(message: JsonRpcResponse): F[Unit] =
-    for {
-      _ <- sessionManager.enqueuePostResponse(sessionId, ServerMessage.Response(message))
-      _ <- sessionManager.enqueuePersistent(sessionId, ServerMessage.Response(message))
-      _ <- sessionManager.updateActivity(sessionId)
-    } yield ()
+    message match {
+      case m: JsonRpcResponse.Notification =>
+        for {
+          _ <- sessionManager.enqueuePersistent(sessionId, m)
+          _ <- sessionManager.updateActivity(sessionId)
+        } yield ()
+      case m: (JsonRpcResponse.Response | JsonRpcResponse.Error) =>
+        for {
+          _ <- sessionManager.enqueuePostResponse(sessionId, m)
+          _ <- sessionManager.enqueuePersistent(sessionId, m)
+          _ <- sessionManager.updateActivity(sessionId)
+        } yield ()
+    }
 }
 
 object HttpSessionTransport {

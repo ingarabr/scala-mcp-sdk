@@ -43,21 +43,6 @@ object EventId {
   given Decoder[EventId] = Decoder.decodeLong.map[EventId](identity)
 }
 
-/** Server message types that can be sent via SSE. */
-sealed trait ServerMessage
-
-object ServerMessage {
-
-  /** JSON-RPC response to client request. */
-  case class Response(msg: JsonRpcResponse) extends ServerMessage
-
-  /** Server-initiated request to client. */
-  case class Request(msg: JsonRpcRequest) extends ServerMessage
-
-  /** Server-initiated notification to client. */
-  case class Notification(msg: JsonRpcRequest) extends ServerMessage
-}
-
 /** State for a single MCP session.
   *
   * @param id
@@ -69,13 +54,13 @@ object ServerMessage {
   * @param lastActivity
   *   Last client activity timestamp (for timeout)
   * @param eventLog
-  *   Log of SSE events for reconnection support
+  *   Log of SSE events for reconnection support (all server→client messages)
   * @param nextEventId
   *   Next event ID to assign
   * @param postResponseQueue
-  *   Queue for messages sent via POST response streams
+  *   Queue for Response/Error messages sent via POST response streams (replies to client requests)
   * @param persistentQueue
-  *   Queue for messages sent via GET persistent stream
+  *   Queue for all JsonRpcResponse messages sent via GET persistent stream (responses and notifications)
   * @param requestQueue
   *   Queue for incoming requests from POST /mcp
   * @param transport
@@ -88,10 +73,10 @@ case class SessionState[F[_]](
     capabilities: Option[ClientCapabilities],
     createdAt: Instant,
     lastActivity: Instant,
-    eventLog: Vector[(EventId, ServerMessage)],
+    eventLog: Vector[(EventId, JsonRpcResponse)],
     nextEventId: EventId,
-    postResponseQueue: Queue[F, Option[ServerMessage]],
-    persistentQueue: Queue[F, Option[ServerMessage]],
+    postResponseQueue: Queue[F, Option[JsonRpcResponse]],
+    persistentQueue: Queue[F, Option[JsonRpcResponse]],
     requestQueue: Queue[F, Option[JsonRpcRequest]],
     transport: HttpSessionTransport[F],
     serverFiber: Fiber[F, Throwable, Unit]

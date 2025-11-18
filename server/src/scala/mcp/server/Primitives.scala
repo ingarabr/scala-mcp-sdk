@@ -10,8 +10,8 @@ import mcp.schema.McpSchema
 /** A tool definition with typed input and optional typed output.
   *
   * Create instances using:
-  *   - `ToolDef.unstructured` for tools returning content (text, images, etc.)
-  *   - `ToolDef.structured` for tools returning typed data with a schema
+  *   - `ToolDef.unstructured` for content tools (text, images, etc.)
+  *   - `ToolDef.structured` for typed data tools
   *
   * @tparam F
   *   Effect type (e.g., IO)
@@ -23,7 +23,7 @@ import mcp.schema.McpSchema
 final case class ToolDef[F[_], Input, Output] private (
     name: String,
     description: Option[String],
-    handler: Input => F[ToolOutput[Output]],
+    handler: (Input, ToolContext[F]) => F[ToolOutput[Output]],
     annotations: Option[ToolAnnotations] = None
 )(using
     val inputSchema: McpSchema[Input],
@@ -41,7 +41,10 @@ final case class ToolDef[F[_], Input, Output] private (
     )
 
   /** Execute the tool with the given arguments, handling encoding/decoding internally */
-  def execute(arguments: Option[JsonObject])(using F: ApplicativeError[F, Throwable]): F[CallToolResult] = {
+  def execute(arguments: Option[JsonObject], context: Option[ToolContext[F]] = None)(using
+      F: ApplicativeError[F, Throwable],
+      S: cats.effect.kernel.Sync[F]
+  ): F[CallToolResult] = {
     val argsJson = arguments.getOrElse(JsonObject.empty).asJson
 
     // Decode input using the schema's codec
@@ -49,15 +52,14 @@ final case class ToolDef[F[_], Input, Output] private (
 
     inputResult match {
       case Right(input) =>
-        // Execute handler and encode output based on type
-        handler(input)
+        val ctx = context.getOrElse(ToolContextImpl.noop[F])
+
+        handler(input, ctx)
           .map(encodeToolOutput)
-          .handleErrorWith { error =>
-            F.pure(
-              CallToolResult(
-                content = List(Content.Text(s"Tool execution failed: ${error.getMessage}")),
-                isError = Some(true)
-              )
+          .handleError { error =>
+            CallToolResult(
+              content = List(Content.Text(s"Tool execution failed: ${error.getMessage}")),
+              isError = Some(true)
             )
           }
 
@@ -103,19 +105,14 @@ object ToolDef {
 
   /** Create a tool that returns flexible content (text, images, multiple items).
     *
-    * Use this when your tool needs to return human-readable content, potentially with mixed types (text + images), or when you don't know
-    * the exact structure in advance.
+    * Use this for human-readable content. Ignore the context parameter if you don't need progress/logging.
     *
     * Example:
     * {{{
     * ToolDef.unstructured[IO, SearchInput](
-    *   name = "search",
-    *   description = Some("Search the web")
-    * ) { input =>
-    *   IO.pure(List(
-    *     Content.Text("Found 3 results..."),
-    *     Content.Image(imageData, "image/png")
-    *   ))
+    *   name = "search"
+    * ) { (input, _) =>
+    *   IO.pure(List(Content.Text("Results...")))
     * }
     * }}}
     */
@@ -123,26 +120,27 @@ object ToolDef {
       name: String,
       description: Option[String] = None,
       annotations: Option[ToolAnnotations] = None
-  )(handler: Input => F[List[Content]])(using schema: McpSchema[Input], F: cats.Functor[F]): ToolDef[F, Input, Nothing] =
+  )(handler: (Input, ToolContext[F]) => F[List[Content]])(using
+      schema: McpSchema[Input],
+      F: cats.Functor[F]
+  ): ToolDef[F, Input, Nothing] =
     ToolDef[F, Input, Nothing](
       name = name,
       description = description,
-      handler = input => F.map(handler(input))(ToolOutput.Unstructured(_)),
+      handler = (input, ctx) => F.map(handler(input, ctx))(ToolOutput.Unstructured(_)),
       annotations = annotations
     )(using schema, None)
 
   /** Create a tool that returns structured, typed data.
     *
-    * Use this when your tool returns predictable, machine-readable data that clients can parse and process programmatically (e.g.,
-    * calculations, structured queries, data transformations).
+    * Use this for typed, machine-readable data. Ignore the context parameter if you don't need progress/logging.
     *
     * Example:
     * {{{
     * ToolDef.structured[IO, AddInput, AddOutput](
-    *   name = "add",
-    *   description = Some("Add two numbers")
-    * ) { input =>
-    *   IO.pure(AddOutput(result = input.a + input.b))
+    *   name = "add"
+    * ) { (input, _) =>
+    *   IO.pure(AddOutput(input.a + input.b))
     * }
     * }}}
     */
@@ -150,7 +148,7 @@ object ToolDef {
       name: String,
       description: Option[String] = None,
       annotations: Option[ToolAnnotations] = None
-  )(handler: Input => F[Output])(using
+  )(handler: (Input, ToolContext[F]) => F[Output])(using
       inputSchema: McpSchema[Input],
       outputSchema: McpSchema[Output],
       F: cats.Functor[F]
@@ -158,7 +156,7 @@ object ToolDef {
     ToolDef[F, Input, Output](
       name = name,
       description = description,
-      handler = input => F.map(handler(input))(ToolOutput.Structured(_)),
+      handler = (input, ctx) => F.map(handler(input, ctx))(ToolOutput.Structured(_)),
       annotations = annotations
     )(using inputSchema, Some(outputSchema))
 }
@@ -287,15 +285,13 @@ case class PromptDef[F[_], Args](
               messages = messages
             )
           }
-          .handleErrorWith { error =>
-            F.pure(
-              GetPromptResult(
-                description = Some(s"Failed to generate prompt: ${error.getMessage}"),
-                messages = List(
-                  PromptMessage(
-                    role = Role.assistant,
-                    content = Content.Text(s"Error: ${error.getMessage}")
-                  )
+          .handleError { error =>
+            GetPromptResult(
+              description = Some(s"Failed to generate prompt: ${error.getMessage}"),
+              messages = List(
+                PromptMessage(
+                  role = Role.assistant,
+                  content = Content.Text(s"Error: ${error.getMessage}")
                 )
               )
             )

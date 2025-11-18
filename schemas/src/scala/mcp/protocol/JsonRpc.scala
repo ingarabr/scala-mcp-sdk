@@ -1,6 +1,5 @@
 package mcp.protocol
 
-import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
 import io.circe.generic.semiauto.*
@@ -94,28 +93,31 @@ object JsonRpcRequest {
   }
 }
 
-/** Messages from server to client (responses and errors). */
+/** Messages from server to client (responses, errors, and notifications). */
 enum JsonRpcResponse {
   case Response(jsonrpc: String, id: RequestId, result: JsonObject)
   case Error(jsonrpc: String, id: Option[RequestId], error: ErrorData)
+  case Notification(jsonrpc: String, method: String, params: Option[JsonObject])
 }
 
 object JsonRpcResponse {
   given Codec[JsonRpcResponse] = new Codec[JsonRpcResponse] {
     def apply(c: HCursor): Decoder.Result[JsonRpcResponse] =
-      // Distinguish Response vs Error by presence of result vs error
       for {
         jsonrpc <- c.get[String]("jsonrpc")
-        result <- c.get[Option[JsonObject]]("result").flatMap {
-          case Some(res) =>
-            // This is a Response - id is required
-            c.get[RequestId]("id").map(id => Response(jsonrpc, id, res))
-          case None =>
-            // This is an Error - id may be null (for parse/invalid request errors)
-            for {
-              maybeId <- c.get[Option[RequestId]]("id")
-              errorData <- c.get[ErrorData]("error")
-            } yield Error(jsonrpc, maybeId, errorData)
+        maybeError <- c.get[Option[ErrorData]]("error")
+        result <- maybeError match {
+          case Some(err) => c.get[Option[RequestId]]("id").map(id => Error(jsonrpc, id, err))
+          case None      =>
+            c.get[Option[RequestId]]("id").flatMap {
+              case Some(id) =>
+                c.get[JsonObject]("result").map(res => Response(jsonrpc, id, res))
+              case None =>
+                for {
+                  method <- c.get[String]("method")
+                  params <- c.get[Option[JsonObject]]("params")
+                } yield Notification(jsonrpc, method, params)
+            }
         }
       } yield result
 
@@ -131,6 +133,12 @@ object JsonRpcResponse {
           "jsonrpc" -> Json.fromString(jsonrpc),
           "id" -> id.asJson,
           "error" -> error.asJson
+        ).asJson
+      case Notification(jsonrpc, method, params) =>
+        JsonObject(
+          "jsonrpc" -> Json.fromString(jsonrpc),
+          "method" -> Json.fromString(method),
+          "params" -> params.asJson
         ).asJson
     }
   }

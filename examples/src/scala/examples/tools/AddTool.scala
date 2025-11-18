@@ -33,7 +33,7 @@ object AddTool {
     ToolDef.structured[F, Input, Output](
       name = "add",
       description = Some("Add two numbers")
-    ) { input =>
+    ) { (input, _) =>
       Async[F].pure(Output(input.a + input.b))
     }
 }

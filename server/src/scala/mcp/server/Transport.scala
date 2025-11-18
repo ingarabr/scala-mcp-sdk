@@ -17,7 +17,7 @@ trait Transport[F[_]] {
   /** Send a JSON-RPC response to the client.
     *
     * @param message
-    *   The response to send (Response or Error)
+    *   The response to send
     */
   def send(message: JsonRpcResponse): F[Unit]
 }

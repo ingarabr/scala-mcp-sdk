@@ -25,7 +25,7 @@ object EchoTool {
     ToolDef.unstructured[F, Input](
       name = "echo",
       description = Some("Echo back the input message")
-    ) { input =>
+    ) { (input, _) =>
       Async[F].pure(List(Content.Text(s"Echo: ${input.message}")))
     }
 }

@@ -64,7 +64,7 @@ object McpHttpRoutes {
     HttpRoutes.of[F] {
 
       case req @ POST -> Root / "mcp" =>
-        extractHeaders(req).flatMap {
+        extractHeaders(req) match {
           case Left(error) =>
             jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
 
@@ -75,8 +75,7 @@ object McpHttpRoutes {
                 sessionManager.getSession(Some(id)).flatMap {
                   case Some(_) =>
                     for {
-                      errorOpt <- validateProtocolVersion(headers)
-                      response <- errorOpt match {
+                      response <- validateProtocolVersion(headers) match {
                         case Some(error) =>
                           jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
                         case None =>
@@ -96,7 +95,7 @@ object McpHttpRoutes {
         }
 
       case req @ GET -> Root / "mcp" =>
-        extractHeaders(req).flatMap {
+        extractHeaders(req) match {
           case Left(error) =>
             jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
 
@@ -105,8 +104,7 @@ object McpHttpRoutes {
             sessionManager.getSession(sessionId).flatMap {
               case Some(_) =>
                 for {
-                  errorOpt <- validateProtocolVersion(headers)
-                  response <- errorOpt match {
+                  response <- validateProtocolVersion(headers) match {
                     case Some(error) =>
                       jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
                     case None =>
@@ -118,13 +116,10 @@ object McpHttpRoutes {
                 if sessionId.isEmpty && enableSessions then
                   for {
                     newSessionId <- sessionManager.createSession(enableSessions, server)
-                    response <- createPersistentJsonStream(newSessionId, headers.lastEventId, sessionManager).flatMap { baseResponse =>
-                      // Add session ID header to response
+                    response <- createPersistentJsonStream(newSessionId, headers.lastEventId, sessionManager).map { baseResponse =>
                       newSessionId match {
-                        case Some(sid) =>
-                          Async[F].pure(baseResponse.putHeaders(Header.Raw(ci"Mcp-Session-Id", sid.value)))
-                        case None =>
-                          Async[F].pure(baseResponse)
+                        case Some(sid) => baseResponse.putHeaders(Header.Raw(ci"Mcp-Session-Id", sid.value))
+                        case None      => baseResponse
                       }
                     }
                   } yield response
@@ -134,7 +129,7 @@ object McpHttpRoutes {
         }
 
       case req @ DELETE -> Root / "mcp" =>
-        extractHeaders(req).flatMap {
+        extractHeaders(req) match {
           case Left(error) =>
             jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
 
@@ -155,44 +150,42 @@ object McpHttpRoutes {
   }
 
   /** Extract and validate HTTP headers. */
-  private def extractHeaders[F[_]: Async](req: Request[F]): F[Either[String, RequestHeaders]] =
-    Async[F].pure {
-      val sessionId = req.headers
-        .get(ci"Mcp-Session-Id")
-        .map(h => SessionId.fromString(h.head.value))
+  private def extractHeaders[F[_]: Async](req: Request[F]): Either[String, RequestHeaders] = {
+    val sessionId = req.headers
+      .get(ci"Mcp-Session-Id")
+      .map(h => SessionId.fromString(h.head.value))
 
-      val protocolVersion = req.headers
-        .get(ci"MCP-Protocol-Version")
-        .map(_.head.value)
+    val protocolVersion = req.headers
+      .get(ci"MCP-Protocol-Version")
+      .map(_.head.value)
 
-      val lastEventId = req.headers
-        .get(ci"Last-Event-ID")
-        .flatMap(h => EventId.fromString(h.head.value))
+    val lastEventId = req.headers
+      .get(ci"Last-Event-ID")
+      .flatMap(h => EventId.fromString(h.head.value))
 
-      val accept = req.headers
-        .get(Accept.headerInstance.name)
-        .map(_.head.value.split(",").map(_.trim).toList)
-        .getOrElse(Nil)
+    val accept = req.headers
+      .get(Accept.headerInstance.name)
+      .map(_.head.value.split(",").map(_.trim).toList)
+      .getOrElse(Nil)
 
-      // Validate Accept header for GET requests (must include text/event-stream)
-
-      if req.method == Method.GET then
-        if accept.contains("text/event-stream") || accept.contains("*/*") then
-          Right(RequestHeaders(sessionId, protocolVersion, lastEventId, accept))
-        else Left("Accept header must include text/event-stream for GET requests")
-      else Right(RequestHeaders(sessionId, protocolVersion, lastEventId, accept))
-    }
+    // Validate Accept header for GET requests (must include text/event-stream)
+    if req.method == Method.GET then
+      if accept.contains("text/event-stream") || accept.contains("*/*") then
+        Right(RequestHeaders(sessionId, protocolVersion, lastEventId, accept))
+      else Left("Accept header must include text/event-stream for GET requests")
+    else Right(RequestHeaders(sessionId, protocolVersion, lastEventId, accept))
+  }
 
   /** Validate protocol version header (required after initialize). */
-  private def validateProtocolVersion[F[_]: Async](headers: RequestHeaders): F[Option[String]] =
+  private def validateProtocolVersion[F[_]: Async](headers: RequestHeaders): Option[String] =
     headers.protocolVersion match {
       case Some(version) if version == Constants.LATEST_PROTOCOL_VERSION =>
-        Async[F].pure(None)
+        None
       case Some(version) =>
-        Async[F].pure(Some(s"Unsupported protocol version: $version. Expected ${Constants.LATEST_PROTOCOL_VERSION}"))
+        Some(s"Unsupported protocol version: $version. Expected ${Constants.LATEST_PROTOCOL_VERSION}")
       case None =>
         // First request (initialize) may not have version
-        Async[F].pure(None)
+        None
     }
 
   /** Handle POST message processing.
@@ -208,17 +201,12 @@ object McpHttpRoutes {
     import dsl.*
 
     val result = for {
-      json <- req.as[Json].attempt.flatMap {
-        case Left(error) =>
-          Async[F].raiseError(new Exception(s"Failed to parse JSON: ${error.getMessage}"))
-        case Right(j) => Async[F].pure(j)
-      }
-      jsonRpcReq <- Async[F].fromEither(json.as[JsonRpcRequest]).attempt.flatMap {
-        case Left(error) =>
-          Async[F].raiseError(new Exception(s"Failed to decode JsonRpcRequest: ${error.getMessage}"))
-        case Right(req) =>
-          Async[F].pure(req)
-      }
+      json <- req.as[Json].adaptError(error => new Exception(s"Failed to parse JSON: ${error.getMessage}"))
+
+      jsonRpcReq <- json
+        .as[JsonRpcRequest]
+        .liftTo[F]
+        .adaptError(error => new Exception(s"Failed to decode JsonRpcRequest: ${error.getMessage}"))
 
       // Check if this is a notification (no id) or request (has id)
       isNotification = jsonRpcReq match {
@@ -239,14 +227,7 @@ object McpHttpRoutes {
               val jsonStream = Stream
                 .fromQueueNoneTerminated(sessionState.postResponseQueue)
                 .take(1) // Take single response for this POST request
-                .evalMap { msg =>
-                  val json = msg match {
-                    case ServerMessage.Response(r)     => r.asJson
-                    case ServerMessage.Request(r)      => r.asJson
-                    case ServerMessage.Notification(n) => n.asJson
-                  }
-                  Async[F].pure(json.deepDropNullValues.noSpaces)
-                }
+                .map(msg => msg.asJson.deepDropNullValues.noSpaces)
                 .through(fs2.text.utf8.encode)
 
               Ok(
@@ -263,9 +244,9 @@ object McpHttpRoutes {
 
     result.handleErrorWith { error =>
       for {
-        requestId <- req.as[Json].attempt.flatMap {
-          case Right(json) => Async[F].pure(json.hcursor.get[RequestId]("id").toOption)
-          case Left(_)     => Async[F].pure(None)
+        requestId <- req.as[Json].attempt.map {
+          case Right(json) => json.hcursor.get[RequestId]("id").toOption
+          case Left(_)     => None
         }
         response <- jsonRpcError[F](requestId, -32603, s"Internal error: ${error.getMessage}")
       } yield response
@@ -286,21 +267,12 @@ object McpHttpRoutes {
     import dsl.*
 
     val result = for {
-      // Parse request
-      json <- req.as[Json].attempt
-      _ <- json match {
-        case Left(error) =>
-          Async[F].raiseError(new Exception(s"Failed to parse JSON: ${error.getMessage}"))
-        case Right(_) => Async[F].unit
-      }
-      parsedJson = json.toOption.get
-
-      method <- Async[F].fromEither(parsedJson.hcursor.get[String]("method"))
-
+      parsedJson <- req.as[Json].adaptError(error => new Exception(s"Failed to parse JSON: ${error.getMessage}"))
+      method <- parsedJson.hcursor.get[String]("method").liftTo[F]
       response <- method match {
         case "initialize" =>
           for {
-            jsonRpcReq <- Async[F].fromEither(parsedJson.as[JsonRpcRequest])
+            jsonRpcReq <- parsedJson.as[JsonRpcRequest].liftTo[F]
             initReq <- jsonRpcReq.fromParam[InitializeRequest].liftTo[F]
             sessionIdOpt <- sessionManager.createSession(enableSessions, server)
             _ <- sessionManager.setCapabilities(sessionIdOpt, initReq.capabilities)
@@ -312,14 +284,7 @@ object McpHttpRoutes {
                 val jsonStream = Stream
                   .fromQueueNoneTerminated(sessionState.postResponseQueue)
                   .take(1) // Take single initialize response
-                  .evalMap { msg =>
-                    val json = msg match {
-                      case ServerMessage.Response(r)     => r.asJson
-                      case ServerMessage.Request(r)      => r.asJson
-                      case ServerMessage.Notification(n) => n.asJson
-                    }
-                    Async[F].pure(json.deepDropNullValues.noSpaces)
-                  }
+                  .map(_.asJson.deepDropNullValues.noSpaces)
                   .through(fs2.text.utf8.encode)
 
                 val baseResponse = Ok(
@@ -332,11 +297,7 @@ object McpHttpRoutes {
                 // Add Mcp-Session-Id header if session-based
                 sessionIdOpt match {
                   case Some(sessionId) =>
-                    baseResponse.map(
-                      _.putHeaders(
-                        Header.Raw(ci"Mcp-Session-Id", sessionId.value)
-                      )
-                    )
+                    baseResponse.map(_.putHeaders(Header.Raw(ci"Mcp-Session-Id", sessionId.value)))
                   case None =>
                     baseResponse
                 }
@@ -353,9 +314,9 @@ object McpHttpRoutes {
 
     result.handleErrorWith { error =>
       for {
-        requestId <- req.as[Json].attempt.flatMap {
-          case Right(json) => Async[F].pure(json.hcursor.get[RequestId]("id").toOption)
-          case Left(_)     => Async[F].pure(None)
+        requestId <- req.as[Json].attempt.map {
+          case Right(json) => json.hcursor.get[RequestId]("id").toOption
+          case Left(_)     => None
         }
         response <- jsonRpcError[F](requestId, -32603, s"Internal error: ${error.getMessage}")
       } yield response
@@ -374,23 +335,18 @@ object McpHttpRoutes {
     sessionManager.getSession(sessionId).flatMap {
       case Some(session) =>
 
-        val replayStream: Stream[F, (EventId, ServerMessage)] = lastEventId match {
+        val replayStream: Stream[F, (EventId, JsonRpcResponse)] = lastEventId match {
           case Some(eventId) => Stream.eval(sessionManager.getEventsSince(sessionId, eventId)).flatMap(events => Stream.emits(events))
           case None          => Stream.empty
         }
 
-        val liveStream: Stream[F, (EventId, ServerMessage)] = Stream
+        val liveStream: Stream[F, (EventId, JsonRpcResponse)] = Stream
           .fromQueueNoneTerminated(session.persistentQueue)
           .evalMap(msg => sessionManager.appendEvent(sessionId, msg).map(_ -> msg))
 
         val fullStream = (replayStream ++ liveStream)
           .map { case (id, msg) =>
-            val json = msg match {
-              case ServerMessage.Response(r)     => r.asJson
-              case ServerMessage.Request(r)      => r.asJson
-              case ServerMessage.Notification(n) => n.asJson
-            }
-            json.deepDropNullValues.noSpaces ++ "\n"
+            msg.asJson.deepDropNullValues.noSpaces ++ "\n"
           }
           .through(fs2.text.utf8.encode)
 
@@ -420,12 +376,10 @@ object McpHttpRoutes {
       error = ErrorData(code = code, message = message)
     )
 
-    val stream = Stream
-      .eval(Async[F].pure(errorResponse.asJson.deepDropNullValues.noSpaces ++ "\n"))
-      .through(fs2.text.utf8.encode)
-
     Ok(
-      stream,
+      Stream(errorResponse.asJson.deepDropNullValues.noSpaces ++ "\n")
+        .covary[F]
+        .through(fs2.text.utf8.encode),
       `Content-Type`(MediaType.`text/event-stream`),
       `Cache-Control`(CacheDirective.`no-cache`()),
       Connection(ci"keep-alive")

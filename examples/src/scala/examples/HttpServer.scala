@@ -30,30 +30,25 @@ object HttpServer extends IOApp {
     )
 
     serverResource.use { mcpServer =>
-      for {
-        // Create session manager
-        sessionManager <- SessionManager[IO]()
-
-        // Start background cleanup of idle sessions
-        _ <- sessionManager.startCleanup(
-          idleTimeout = 30.minutes, // Remove sessions idle for 30 minutes
-          checkInterval = 5.minutes // Check every 5 minutes
-        )
-
-        routes = McpHttpRoutes.routes[IO](
+      // Create session manager with automatic cleanup
+      SessionManager[IO](
+        idleTimeout = 30.minutes, // Remove sessions idle for 30 minutes
+        checkInterval = 5.minutes // Check every 5 minutes
+      ).use { sessionManager =>
+        val routes = McpHttpRoutes.routes[IO](
           server = mcpServer,
           sessionManager = sessionManager,
           enableSessions = true
         )
 
-        corsConfig = CORS.policy.withAllowOriginAll.withAllowMethodsAll.withAllowHeadersAll
+        val corsConfig = CORS.policy.withAllowOriginAll.withAllowMethodsAll.withAllowHeadersAll
 
-        httpApp = ColoredConsoleLogger[IO](
+        val httpApp = ColoredConsoleLogger[IO](
           logHeaders = true,
           logBody = true
         )(corsConfig(routes)).orNotFound
 
-        httpServer = EmberServerBuilder
+        val httpServer = EmberServerBuilder
           .default[IO]
 //          .withHost(ipv4"0.0.0.0")
           .withHost(ipv4"127.0.0.1")
@@ -62,7 +57,7 @@ object HttpServer extends IOApp {
           .build
 
         // Start server
-        exitCode <- IO.println("""
+        IO.println("""
           |🚀 HTTP MCP Server starting...
           |   Endpoint: http://localhost:8080/mcp
           |   Mode: Session-based (multi-client)
@@ -74,7 +69,7 @@ object HttpServer extends IOApp {
           |   Press Ctrl+C to stop
           |""".stripMargin) *>
           httpServer.use(_ => IO.never).as(ExitCode.Success)
-      } yield exitCode
+      }
     }
   }
 }
