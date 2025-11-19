@@ -171,14 +171,7 @@ private class McpServerImpl[F[_]: Async](
         case Some(caps) =>
           handler(caps)
         case None =>
-          Async[F].pure(
-            Left(
-              ErrorData(
-                code = Constants.INTERNAL_ERROR,
-                message = "Server not initialized"
-              )
-            )
-          )
+          ErrorData(code = Constants.INTERNAL_ERROR, message = "Server not initialized").asError
       }
     }
 
@@ -209,25 +202,21 @@ private class McpServerImpl[F[_]: Async](
       case "prompts/get" =>
         withCapabilities(caps => handleGetPrompt(params, caps))
 
+      case "logging/setLevel" =>
+        withCapabilities(_ => handleSetLevel(params))
+
       case _ =>
-        Async[F].pure(
-          Left(
-            ErrorData(
-              code = Constants.METHOD_NOT_FOUND,
-              message = s"Method not found: $method"
-            )
-          )
-        )
+        ErrorData(code = Constants.METHOD_NOT_FOUND, message = s"Method not found: $method").asError
     }
 
   /** Handle notifications (fire and forget) */
   private def handleNotification(method: String): F[Unit] =
     method match {
       case "initialized" =>
-        // Transition from Initialized to Operational state
+        // Transition from Initialized to Operational state, preserving minLogLevel
         connectionState.get.flatMap {
-          case ConnectionState.Initialized(caps) =>
-            connectionState.set(ConnectionState.Operational(caps))
+          case ConnectionState.Initialized(caps, minLogLevel) =>
+            connectionState.set(ConnectionState.Operational(caps, minLogLevel))
           case _ =>
             // Already operational or not yet initialized - ignore
             Async[F].unit
@@ -248,32 +237,51 @@ private class McpServerImpl[F[_]: Async](
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[InitializeRequest] match {
       case Right(request) =>
-        for {
-          _ <- connectionState.set(ConnectionState.Initialized(request.capabilities))
-
-          result = InitializeResult(
-            protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
-            capabilities = capabilities,
-            serverInfo = info
-          )
-        } yield Right(result.asJsonObject)
-
-      case Left(error) =>
-        Async[F].pure(
-          Left(
-            ErrorData(
-              code = Constants.INVALID_PARAMS,
-              message = s"Invalid initialize request: ${error.getMessage}"
+        connectionState
+          .set(ConnectionState.Initialized(request.capabilities))
+          .as(
+            Right(
+              InitializeResult(
+                protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
+                capabilities = capabilities,
+                serverInfo = info
+              ).asJsonObject
             )
           )
-        )
+
+      case Left(error) =>
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid initialize request: ${error.getMessage}").asError
     }
   }
 
   /** Handle ping request - respond immediately with empty result */
-  private def handlePing(): F[Either[ErrorData, JsonObject]] = {
-    val result = EmptyResult()
-    Async[F].pure(Right(result.asJsonObject))
+  private def handlePing(): F[Either[ErrorData, JsonObject]] =
+    Async[F].pure(Right(EmptyResult().asJsonObject))
+
+  /** Handle logging/setLevel request - configure minimum log level for the connection.
+    *
+    * This can only be called after initialization (Initialized or Operational state). Updates the connection state to include the new
+    * minimum log level.
+    */
+  private def handleSetLevel(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[SetLevelRequest] match {
+      case Right(request) =>
+        connectionState.get.flatMap {
+          case ConnectionState.Initialized(caps, _) =>
+            connectionState.set(ConnectionState.Initialized(caps, Some(request.level))).as(Right(EmptyResult().asJsonObject))
+          case ConnectionState.Operational(caps, _) =>
+            connectionState.set(ConnectionState.Operational(caps, Some(request.level))).as(Right(EmptyResult().asJsonObject))
+
+          case _ =>
+            // Not initialized yet - this shouldn't happen in practice as withCapabilities should guard it,
+            // but we handle it gracefully
+            ErrorData(code = Constants.INTERNAL_ERROR, message = "Cannot set log level before initialization").asError
+        }
+
+      case Left(error) =>
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid logging/setLevel request: ${error.getMessage}").asError
+    }
   }
 
   private def handleListTools(): F[Either[ErrorData, JsonObject]] = {
@@ -295,36 +303,22 @@ private class McpServerImpl[F[_]: Async](
       .flatMap(_("progressToken"))
       .flatMap(_.as[ProgressToken].toOption)
 
-    // TODO: Extract minimum log level from connection state
-    val minLogLevel: Option[LoggingLevel] = None
+    // Get minimum log level from connection state (configured via logging/setLevel)
+    connectionState.get.flatMap { state =>
+      val context = ToolContextImpl[F](transport, progressToken, state.minLogLevel)
 
-    val context = ToolContextImpl[F](transport, progressToken, minLogLevel)
+      paramsJson.as[CallToolRequest] match {
+        case Right(request) =>
+          toolsMap.get(request.name) match {
+            case Some(toolDef) =>
+              toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
+            case None =>
+              ErrorData(code = Constants.INVALID_PARAMS, message = s"Tool not found: ${request.name}").asError
+          }
 
-    paramsJson.as[CallToolRequest] match {
-      case Right(request) =>
-        toolsMap.get(request.name) match {
-          case Some(toolDef) =>
-            toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
-          case None =>
-            Async[F].pure(
-              Left(
-                ErrorData(
-                  code = Constants.INVALID_PARAMS,
-                  message = s"Tool not found: ${request.name}"
-                )
-              )
-            )
-        }
-
-      case Left(error) =>
-        Async[F].pure(
-          Left(
-            ErrorData(
-              code = Constants.INVALID_PARAMS,
-              message = s"Invalid tool call request: ${error.getMessage}"
-            )
-          )
-        )
+        case Left(error) =>
+          ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid tool call request: ${error.getMessage}").asError
+      }
     }
   }
 
@@ -341,25 +335,11 @@ private class McpServerImpl[F[_]: Async](
           case Some(resourceDef) =>
             resourceDef.read.map(result => Right(result.asJsonObject))
           case None =>
-            Async[F].pure(
-              Left(
-                ErrorData(
-                  code = Constants.INVALID_PARAMS,
-                  message = s"Resource not found: ${request.uri}"
-                )
-              )
-            )
+            ErrorData(code = Constants.INVALID_PARAMS, message = s"Resource not found: ${request.uri}").asError
         }
 
       case Left(error) =>
-        Async[F].pure(
-          Left(
-            ErrorData(
-              code = Constants.INVALID_PARAMS,
-              message = s"Invalid read resource request: ${error.getMessage}"
-            )
-          )
-        )
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid read resource request: ${error.getMessage}").asError
     }
   }
 
@@ -376,11 +356,15 @@ private class McpServerImpl[F[_]: Async](
           case Some(promptDef) =>
             promptDef.get(request.arguments).map(result => Right(result.asJsonObject))
           case None =>
-            Async[F].pure(Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Prompt not found: ${request.name}")))
+            ErrorData(code = Constants.INVALID_PARAMS, message = s"Prompt not found: ${request.name}").asError
         }
 
       case Left(error) =>
-        Async[F].pure(Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid get prompt request: ${error.getMessage}")))
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid get prompt request: ${error.getMessage}").asError
     }
   }
+}
+
+extension (ed: ErrorData) {
+  def asError[F[_]: Async, A]: F[Either[ErrorData, A]] = Async[F].pure(Left(ed))
 }

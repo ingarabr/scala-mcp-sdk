@@ -1,6 +1,6 @@
 package mcp.server
 
-import mcp.protocol.ClientCapabilities
+import mcp.protocol.{ClientCapabilities, LoggingLevel}
 
 /** Connection lifecycle state machine based on MCP specification.
   *
@@ -49,8 +49,10 @@ enum ConnectionState {
     *
     * @param capabilities
     *   The client capabilities received during initialization
+    * @param logLevel
+    *   The minimum log level for messages sent to the client. None means no filtering (send all logs).
     */
-  case Initialized(capabilities: ClientCapabilities)
+  case Initialized(capabilities: ClientCapabilities, logLevel: Option[LoggingLevel] = None)
 
   /** Fully operational, normal protocol communication.
     *
@@ -61,8 +63,10 @@ enum ConnectionState {
     *
     * @param capabilities
     *   The client capabilities negotiated during initialization
+    * @param logLevel
+    *   The minimum log level for messages sent to the client. None means no filtering (send all logs).
     */
-  case Operational(capabilities: ClientCapabilities)
+  case Operational(capabilities: ClientCapabilities, logLevel: Option[LoggingLevel] = None)
 
   /** Connection shutting down or closed.
     *
@@ -75,8 +79,15 @@ enum ConnectionState {
 
   /** Get client capabilities if available (in Initialized or Operational state) */
   def clientCapabilities: Option[ClientCapabilities] = this match {
-    case Initialized(caps) => Some(caps)
-    case Operational(caps) => Some(caps)
-    case _                 => None
+    case Initialized(caps, _) => Some(caps)
+    case Operational(caps, _) => Some(caps)
+    case _                    => None
+  }
+
+  /** Get the minimum log level if available (in Initialized or Operational state) */
+  def minLogLevel: Option[LoggingLevel] = this match {
+    case Initialized(_, level) => level
+    case Operational(_, level) => level
+    case _                     => None
   }
 }
