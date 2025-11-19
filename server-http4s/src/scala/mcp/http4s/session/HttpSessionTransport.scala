@@ -26,8 +26,10 @@ class HttpSessionTransport[F[_]: Async](
 
   /** Send response (or notification) to client.
     *
-    * Responses and errors go to both POST response stream and persistent GET stream. Notifications only go to persistent GET stream (not
-    * POST response).
+    * Per MCP spec: "MUST NOT broadcast the same message across multiple streams"
+    *   - Notifications go to persistent GET/SSE stream only
+    *   - Responses/Errors go to POST response stream only
+    * Both are logged to event log for replay during reconnection.
     */
   def send(message: JsonRpcResponse): F[Unit] =
     message match {
@@ -39,7 +41,7 @@ class HttpSessionTransport[F[_]: Async](
       case m: (JsonRpcResponse.Response | JsonRpcResponse.Error) =>
         for {
           _ <- sessionManager.enqueuePostResponse(sessionId, m)
-          _ <- sessionManager.enqueuePersistent(sessionId, m)
+          _ <- sessionManager.logEvent(sessionId, m) // Log for replay, but don't send to SSE stream
           _ <- sessionManager.updateActivity(sessionId)
         } yield ()
     }

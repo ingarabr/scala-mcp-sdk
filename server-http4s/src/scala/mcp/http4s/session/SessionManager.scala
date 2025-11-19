@@ -82,6 +82,17 @@ trait SessionManager[F[_]] {
     */
   def appendEvent(id: Option[SessionId], msg: JsonRpcResponse): F[EventId]
 
+  /** Log event to session log without enqueueing to any queue.
+    *
+    * Used for logging responses that go via POST body, so they can be replayed during reconnection.
+    *
+    * @param id
+    *   Session ID (None for sessionless mode)
+    * @param msg
+    *   Server→client message to log
+    */
+  def logEvent(id: Option[SessionId], msg: JsonRpcResponse): F[Unit]
+
   /** Get events since given event ID (for SSE reconnection).
     *
     * @param id
@@ -301,6 +312,9 @@ private[session] class HttpSessionManager[F[_]: Async](
           (sessions, EventId.zero)
       }
     }
+
+  def logEvent(id: Option[SessionId], msg: JsonRpcResponse): F[Unit] =
+    appendEvent(id, msg).void
 
   def getEventsSince(id: Option[SessionId], eventId: EventId): F[Vector[(EventId, JsonRpcResponse)]] =
     sessionsRef.get.map { sessions =>

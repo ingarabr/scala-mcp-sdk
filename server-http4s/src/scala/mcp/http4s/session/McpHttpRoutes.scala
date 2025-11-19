@@ -345,8 +345,9 @@ object McpHttpRoutes {
           .evalMap(msg => sessionManager.appendEvent(sessionId, msg).map(_ -> msg))
 
         val fullStream = (replayStream ++ liveStream)
-          .map { case (id, msg) =>
-            msg.asJson.deepDropNullValues.noSpaces ++ "\n"
+          .map { case (eventId, msg) =>
+            val data = msg.asJson.deepDropNullValues.noSpaces
+            s"id: ${eventId.value}\nevent: message\ndata: $data\n\n"
           }
           .through(fs2.text.utf8.encode)
 
@@ -376,8 +377,9 @@ object McpHttpRoutes {
       error = ErrorData(code = code, message = message)
     )
 
+    val data = errorResponse.asJson.deepDropNullValues.noSpaces
     Ok(
-      Stream(errorResponse.asJson.deepDropNullValues.noSpaces ++ "\n")
+      Stream(s"event: message\ndata: $data\n\n")
         .covary[F]
         .through(fs2.text.utf8.encode),
       `Content-Type`(MediaType.`text/event-stream`),
