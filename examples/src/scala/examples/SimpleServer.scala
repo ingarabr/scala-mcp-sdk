@@ -3,7 +3,7 @@ package examples
 import cats.effect.*
 import mcp.protocol.*
 import mcp.server.*
-import examples.tools.{AddTool, EchoTool}
+import examples.tools.{AddTool, EchoTool, LogAndProgressTool}
 import examples.resources.ServerConfigResource
 import examples.prompts.GreetingPrompt
 
@@ -24,7 +24,7 @@ object SimpleServer extends IOApp.Simple {
     // Create and run the server with imported primitives
     McpServer[IO](
       info = Implementation("simple-server", "1.0.0"),
-      tools = List(EchoTool[IO], AddTool[IO]),
+      tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
       resources = List(ServerConfigResource[IO]),
       prompts = List(GreetingPrompt[IO])
     ).use { server =>

@@ -5,9 +5,6 @@ import mcp.protocol.JsonSchemaType.*
 import mcp.schema.McpSchemaTest.{Nested, Simple, SimpleMinimal, Team, WithClassDescription}
 import munit.*
 
-import scala.annotation.nowarn
-
-@nowarn("msg=unused import")
 class McpSchemaTest extends FunSuite {
 
   test("derive simple minimal") {

@@ -7,8 +7,7 @@ import mcp.http4s.session.{McpHttpRoutes, SessionManager}
 import mcp.server.McpServer
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.server.middleware.CORS
-
-import examples.tools.{AddTool, EchoTool}
+import examples.tools.{AddTool, EchoTool, LogAndProgressTool}
 import examples.resources.ServerConfigResource
 import examples.prompts.GreetingPrompt
 
@@ -24,7 +23,7 @@ object HttpServer extends IOApp {
     // Create MCP server with primitives
     val serverResource = McpServer[IO](
       info = Implementation("http-mcp-server", "1.0.0"),
-      tools = List(EchoTool[IO], AddTool[IO]),
+      tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
       resources = List(ServerConfigResource[IO]),
       prompts = List(GreetingPrompt[IO])
     )
