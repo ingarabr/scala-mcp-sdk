@@ -1,7 +1,7 @@
 package mcp.server
 
 import io.circe.Json
-import mcp.protocol.{LoggingLevel, ProgressToken}
+import mcp.protocol.{LoggingLevel, ProgressToken, Root}
 
 /** Execution context for tools, providing progress and logging capabilities.
   *
@@ -78,4 +78,19 @@ trait ToolContext[F[_]] {
 
   /** The progress token from the request, if provided by the client. */
   def progressToken: Option[ProgressToken]
+
+  /** The list of roots exposed by the client, if available.
+    *
+    * Roots represent the operational boundaries (workspace directories/files) that the client has exposed to the server. Tools can use this
+    * to:
+    *   - Validate file operations are within allowed boundaries
+    *   - Understand the workspace structure
+    *   - Scope operations appropriately
+    *
+    * Returns None if:
+    *   - Client doesn't support roots capability
+    *   - Roots haven't been fetched yet (cache miss)
+    *   - Server is not initialized
+    */
+  def roots: Option[List[Root]]
 }

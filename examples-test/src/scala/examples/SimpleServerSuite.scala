@@ -35,6 +35,9 @@ class SimpleServerSuite extends CatsEffectSuite {
 
     def send(message: JsonRpcResponse): IO[Unit] =
       serverToClient.offer(Some(message)).void
+
+    def sendRequest(method: String, params: Option[io.circe.JsonObject]): IO[Either[mcp.protocol.ErrorData, io.circe.JsonObject]] =
+      IO.raiseError(new NotImplementedError("TestTransport.sendRequest not implemented"))
   }
 
   object TestTransport {

@@ -203,43 +203,75 @@ object McpHttpRoutes {
     val result = for {
       json <- req.as[Json].adaptError(error => new Exception(s"Failed to parse JSON: ${error.getMessage}"))
 
-      jsonRpcReq <- json
-        .as[JsonRpcRequest]
-        .liftTo[F]
-        .adaptError(error => new Exception(s"Failed to decode JsonRpcRequest: ${error.getMessage}"))
-
-      // Check if this is a notification (no id) or request (has id)
-      isNotification = jsonRpcReq match {
-        case JsonRpcRequest.Notification(_, _, _) => true
-        case JsonRpcRequest.Request(_, _, _, _)   => false
-      }
-
-      _ <- sessionManager.enqueueRequest(sessionId, jsonRpcReq)
-
-      response <-
-        if isNotification then
-          // Notifications get 202 Accepted with empty JSON object
-          Accepted(Json.obj().deepDropNullValues.noSpaces, `Content-Type`(MediaType.application.json))
-        else
-          // Requests need to wait for response from queue
-          sessionManager.getSession(sessionId).flatMap {
-            case Some(sessionState) =>
-              val jsonStream = Stream
-                .fromQueueNoneTerminated(sessionState.postResponseQueue)
-                .take(1) // Take single response for this POST request
-                .map(msg => msg.asJson.deepDropNullValues.noSpaces)
-                .through(fs2.text.utf8.encode)
-
-              Ok(
-                jsonStream,
-                `Content-Type`(MediaType.application.json),
-                `Cache-Control`(CacheDirective.`no-cache`()),
-                Connection(ci"keep-alive")
-              )
-
-            case None =>
-              Async[F].raiseError(new Exception("Session not found"))
+      // Try parsing as JsonRpcRequest first (client request to server)
+      response <- json.as[JsonRpcRequest] match {
+        case Right(jsonRpcReq) =>
+          // This is a client request to server
+          val isNotification = jsonRpcReq match {
+            case JsonRpcRequest.Notification(_, _, _) => true
+            case JsonRpcRequest.Request(_, _, _, _)   => false
           }
+
+          sessionManager.enqueueRequest(sessionId, jsonRpcReq) >>
+            (if isNotification then
+               // Notifications get 202 Accepted with empty JSON object
+               Accepted(Json.obj().deepDropNullValues.noSpaces, `Content-Type`(MediaType.application.json))
+             else
+               // Requests need to wait for response from queue
+               sessionManager.getSession(sessionId).flatMap {
+                 case Some(sessionState) =>
+                   val jsonStream = Stream
+                     .fromQueueNoneTerminated(sessionState.postResponseQueue)
+                     .take(1) // Take single response for this POST request
+                     .map(msg => msg.asJson.deepDropNullValues.noSpaces)
+                     .through(fs2.text.utf8.encode)
+
+                   Ok(
+                     jsonStream,
+                     `Content-Type`(MediaType.application.json),
+                     `Cache-Control`(CacheDirective.`no-cache`()),
+                     Connection(ci"keep-alive")
+                   )
+
+                 case None =>
+                   Async[F].raiseError(new Exception("Session not found"))
+               })
+
+        case Left(_) =>
+          // Not a request, try parsing as JsonRpcResponse (client response to server request)
+          json.as[JsonRpcResponse] match {
+            case Right(jsonRpcResp) =>
+              // This is a client response to a server-initiated request
+              jsonRpcResp match {
+                case JsonRpcResponse.Response(_, id, result) =>
+                  // Complete pending server request with success
+                  sessionManager.getSession(sessionId).flatMap {
+                    case Some(sessionState) =>
+                      sessionState.transport.completeRequest(id, Right(result)) >>
+                        Accepted(Json.obj().deepDropNullValues.noSpaces, `Content-Type`(MediaType.application.json))
+                    case None =>
+                      Async[F].raiseError(new Exception("Session not found"))
+                  }
+
+                case JsonRpcResponse.Error(_, Some(id), error) =>
+                  // Complete pending server request with error
+                  sessionManager.getSession(sessionId).flatMap {
+                    case Some(sessionState) =>
+                      sessionState.transport.completeRequest(id, Left(error)) >>
+                        Accepted(Json.obj().deepDropNullValues.noSpaces, `Content-Type`(MediaType.application.json))
+                    case None =>
+                      Async[F].raiseError(new Exception("Session not found"))
+                  }
+
+                case _ =>
+                  Async[F].raiseError(new Exception("Invalid JsonRpcResponse format"))
+              }
+
+            case Left(error) =>
+              // Failed to parse as either request or response
+              Async[F].raiseError(new Exception(s"Failed to decode JSON-RPC message: ${error.getMessage}"))
+          }
+      }
     } yield response
 
     result.handleErrorWith { error =>
@@ -335,18 +367,18 @@ object McpHttpRoutes {
     sessionManager.getSession(sessionId).flatMap {
       case Some(session) =>
 
-        val replayStream: Stream[F, (EventId, JsonRpcResponse)] = lastEventId match {
+        val replayStream: Stream[F, (EventId, io.circe.Json)] = lastEventId match {
           case Some(eventId) => Stream.eval(sessionManager.getEventsSince(sessionId, eventId)).flatMap(events => Stream.emits(events))
           case None          => Stream.empty
         }
 
-        val liveStream: Stream[F, (EventId, JsonRpcResponse)] = Stream
+        val liveStream: Stream[F, (EventId, io.circe.Json)] = Stream
           .fromQueueNoneTerminated(session.persistentQueue)
           .evalMap(msg => sessionManager.appendEvent(sessionId, msg).map(_ -> msg))
 
         val fullStream = (replayStream ++ liveStream)
           .map { case (eventId, msg) =>
-            val data = msg.asJson.deepDropNullValues.noSpaces
+            val data = msg.deepDropNullValues.noSpaces
             s"id: ${eventId.value}\nevent: message\ndata: $data\n\n"
           }
           .through(fs2.text.utf8.encode)

@@ -3,7 +3,7 @@ package mcp.server
 import cats.effect.Sync
 import io.circe.Json
 import io.circe.syntax.*
-import mcp.protocol.{Constants, JsonRpcResponse, LoggingLevel, LoggingMessageNotification, ProgressNotification, ProgressToken}
+import mcp.protocol.{Constants, JsonRpcResponse, LoggingLevel, LoggingMessageNotification, ProgressNotification, ProgressToken, Root}
 
 /** Sends progress and logging notifications via the transport layer. Filters log messages based on minimum log level.
   *
@@ -13,13 +13,16 @@ import mcp.protocol.{Constants, JsonRpcResponse, LoggingLevel, LoggingMessageNot
   *   Progress token from request metadata (if provided)
   * @param minLogLevel
   *   Minimum log level to send (messages below this are filtered)
+  * @param rootsList
+  *   List of roots exposed by the client (if available)
   * @tparam F
   *   The effect type
   */
 class ToolContextImpl[F[_]: Sync](
     transport: Transport[F],
     token: Option[ProgressToken],
-    minLogLevel: Option[LoggingLevel]
+    minLogLevel: Option[LoggingLevel],
+    rootsList: Option[List[Root]]
 ) extends ToolContext[F] {
 
   def reportProgress(
@@ -71,6 +74,8 @@ class ToolContextImpl[F[_]: Sync](
 
   def progressToken: Option[ProgressToken] = token
 
+  def roots: Option[List[Root]] = rootsList
+
   /** Check if a log message should be sent based on minimum log level.
     *
     * Log levels (from lowest to highest severity): debug, info, notice, warning, error, critical, alert, emergency
@@ -92,13 +97,16 @@ object ToolContextImpl {
     *   Progress token from request metadata (if provided)
     * @param minLogLevel
     *   Minimum log level to send (messages below this are filtered)
+    * @param roots
+    *   List of roots exposed by the client (if available)
     */
   def apply[F[_]: Sync](
       transport: Transport[F],
       progressToken: Option[ProgressToken],
-      minLogLevel: Option[LoggingLevel] = None
+      minLogLevel: Option[LoggingLevel] = None,
+      roots: Option[List[Root]] = None
   ): ToolContext[F] =
-    new ToolContextImpl[F](transport, progressToken, minLogLevel)
+    new ToolContextImpl[F](transport, progressToken, minLogLevel, roots)
 
   /** Create a no-op ToolContext that ignores all progress and logging calls.
     *
@@ -109,5 +117,6 @@ object ToolContextImpl {
       def reportProgress(progress: Double, total: Option[Double], message: Option[String]): F[Unit] = Sync[F].unit
       def log(level: LoggingLevel, data: Json, logger: Option[String]): F[Unit] = Sync[F].unit
       def progressToken: Option[ProgressToken] = None
+      def roots: Option[List[Root]] = None
     }
 }

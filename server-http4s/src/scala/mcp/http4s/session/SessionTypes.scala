@@ -73,10 +73,10 @@ case class SessionState[F[_]](
     capabilities: Option[ClientCapabilities],
     createdAt: Instant,
     lastActivity: Instant,
-    eventLog: Vector[(EventId, JsonRpcResponse)],
+    eventLog: Vector[(EventId, io.circe.Json)],
     nextEventId: EventId,
     postResponseQueue: Queue[F, Option[JsonRpcResponse]],
-    persistentQueue: Queue[F, Option[JsonRpcResponse]],
+    persistentQueue: Queue[F, Option[io.circe.Json]], // Changed to Json to support both responses and server requests
     requestQueue: Queue[F, Option[JsonRpcRequest]],
     transport: HttpSessionTransport[F],
     serverFiber: Fiber[F, Throwable, Unit]

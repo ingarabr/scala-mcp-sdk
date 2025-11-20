@@ -51,8 +51,6 @@ projects:
     dependencies:
       - org.scalameta::munit:1.1.0
       - org.typelevel::munit-cats-effect:2.0.0
-      - org.http4s::http4s-ember-server:0.23.27
-      - org.http4s::http4s-ember-client:0.23.27
 
   examples:
     extends: template-main
@@ -71,6 +69,8 @@ projects:
     dependencies:
       - org.scalameta::munit:1.1.0
       - org.typelevel::munit-cats-effect:2.0.0
+      - org.http4s::http4s-ember-server:0.23.27
+      - org.http4s::http4s-ember-client:0.23.27
 
 scripts:
   publish-locally:

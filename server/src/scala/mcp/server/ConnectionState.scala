@@ -1,6 +1,6 @@
 package mcp.server
 
-import mcp.protocol.{ClientCapabilities, LoggingLevel}
+import mcp.protocol.{ClientCapabilities, LoggingLevel, Root}
 
 /** Connection lifecycle state machine based on MCP specification.
   *
@@ -51,8 +51,14 @@ enum ConnectionState {
     *   The client capabilities received during initialization
     * @param logLevel
     *   The minimum log level for messages sent to the client. None means no filtering (send all logs).
+    * @param roots
+    *   The list of roots exposed by the client. None means roots haven't been fetched yet.
     */
-  case Initialized(capabilities: ClientCapabilities, logLevel: Option[LoggingLevel] = None)
+  case Initialized(
+      capabilities: ClientCapabilities,
+      logLevel: Option[LoggingLevel] = None,
+      roots: Option[List[Root]] = None
+  )
 
   /** Fully operational, normal protocol communication.
     *
@@ -65,8 +71,14 @@ enum ConnectionState {
     *   The client capabilities negotiated during initialization
     * @param logLevel
     *   The minimum log level for messages sent to the client. None means no filtering (send all logs).
+    * @param roots
+    *   The list of roots exposed by the client. None means roots haven't been fetched yet.
     */
-  case Operational(capabilities: ClientCapabilities, logLevel: Option[LoggingLevel] = None)
+  case Operational(
+      capabilities: ClientCapabilities,
+      logLevel: Option[LoggingLevel] = None,
+      roots: Option[List[Root]] = None
+  )
 
   /** Connection shutting down or closed.
     *
@@ -79,15 +91,22 @@ enum ConnectionState {
 
   /** Get client capabilities if available (in Initialized or Operational state) */
   def clientCapabilities: Option[ClientCapabilities] = this match {
-    case Initialized(caps, _) => Some(caps)
-    case Operational(caps, _) => Some(caps)
-    case _                    => None
+    case s: Initialized => Some(s.capabilities)
+    case s: Operational => Some(s.capabilities)
+    case _              => None
   }
 
   /** Get the minimum log level if available (in Initialized or Operational state) */
   def minLogLevel: Option[LoggingLevel] = this match {
-    case Initialized(_, level) => level
-    case Operational(_, level) => level
-    case _                     => None
+    case s: Initialized => s.logLevel
+    case s: Operational => s.logLevel
+    case _              => None
+  }
+
+  /** Get the roots list if available (in Initialized or Operational state) */
+  def rootsList: Option[List[Root]] = this match {
+    case s: Initialized => s.roots
+    case s: Operational => s.roots
+    case _              => None
   }
 }

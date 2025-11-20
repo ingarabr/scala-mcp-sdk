@@ -23,11 +23,14 @@ class SessionManagerTest extends CatsEffectSuite {
     ).allocated.map(_._1)
 
   /** Create a test notification message. */
-  private def testNotification() = JsonRpcResponse.Notification(
-    jsonrpc = Constants.JSONRPC_VERSION,
-    method = "test/notification",
-    params = None
-  )
+  private def testNotification(): io.circe.Json = {
+    import io.circe.*
+    import io.circe.syntax.*
+    Json.obj(
+      "jsonrpc" -> Json.fromString(Constants.JSONRPC_VERSION),
+      "method" -> Json.fromString("test/notification")
+    )
+  }
 
   test("createSession in session-based mode generates unique IDs") {
     for {
@@ -176,9 +179,14 @@ class SessionManagerTest extends CatsEffectSuite {
       server <- createTestServer()
       id <- manager.createSession(sessionBased = true, server)
       state <- manager.getSession(id)
-      msg = testNotification()
-      _ <- manager.enqueuePostResponse(id, msg)
-      _ <- manager.enqueuePersistent(id, msg)
+      jsonMsg = testNotification()
+      responseMsg = JsonRpcResponse.Notification(
+        jsonrpc = Constants.JSONRPC_VERSION,
+        method = "test/notification",
+        params = None
+      )
+      _ <- manager.enqueuePostResponse(id, responseMsg)
+      _ <- manager.enqueuePersistent(id, jsonMsg)
       postMsg <- state.get.postResponseQueue.take
       persistentMsg <- state.get.persistentQueue.take
     } yield {

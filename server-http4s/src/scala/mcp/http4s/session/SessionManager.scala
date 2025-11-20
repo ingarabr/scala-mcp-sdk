@@ -5,7 +5,7 @@ import cats.effect.std.Queue
 import cats.effect.syntax.all.*
 import cats.syntax.all.*
 import fs2.Stream
-import mcp.protocol.{ClientCapabilities, JsonRpcRequest, JsonRpcResponse}
+import mcp.protocol.{ClientCapabilities, Constants, JsonRpcRequest, JsonRpcResponse}
 import mcp.server.McpServer
 
 import java.time.Instant
@@ -80,7 +80,7 @@ trait SessionManager[F[_]] {
     * @return
     *   Event ID assigned to this message
     */
-  def appendEvent(id: Option[SessionId], msg: JsonRpcResponse): F[EventId]
+  def appendEvent(id: Option[SessionId], msg: io.circe.Json): F[EventId]
 
   /** Log event to session log without enqueueing to any queue.
     *
@@ -91,7 +91,7 @@ trait SessionManager[F[_]] {
     * @param msg
     *   Server→client message to log
     */
-  def logEvent(id: Option[SessionId], msg: JsonRpcResponse): F[Unit]
+  def logEvent(id: Option[SessionId], msg: io.circe.Json): F[Unit]
 
   /** Get events since given event ID (for SSE reconnection).
     *
@@ -102,7 +102,7 @@ trait SessionManager[F[_]] {
     * @return
     *   All events after eventId
     */
-  def getEventsSince(id: Option[SessionId], eventId: EventId): F[Vector[(EventId, JsonRpcResponse)]]
+  def getEventsSince(id: Option[SessionId], eventId: EventId): F[Vector[(EventId, io.circe.Json)]]
 
   /** Enqueue message for POST response stream.
     *
@@ -115,12 +115,14 @@ trait SessionManager[F[_]] {
 
   /** Enqueue message for persistent GET stream.
     *
+    * Can send both JsonRpcResponse (responses/notifications) and server-initiated requests.
+    *
     * @param id
     *   Session ID (None for sessionless mode)
     * @param msg
-    *   Server→client message
+    *   JSON message to send via SSE (response, notification, or server request)
     */
-  def enqueuePersistent(id: Option[SessionId], msg: JsonRpcResponse): F[Unit]
+  def enqueuePersistent(id: Option[SessionId], msg: io.circe.Json): F[Unit]
 
   /** Enqueue request from client (POST /mcp).
     *
@@ -130,6 +132,24 @@ trait SessionManager[F[_]] {
     *   JSON-RPC request from client
     */
   def enqueueRequest(id: Option[SessionId], request: JsonRpcRequest): F[Unit]
+
+  /** Send a server-initiated request to the client via SSE stream.
+    *
+    * @param id
+    *   Session ID (None for sessionless mode)
+    * @param requestId
+    *   Unique ID for this request
+    * @param method
+    *   JSON-RPC method name
+    * @param params
+    *   Optional request parameters
+    */
+  def sendServerRequest(
+      id: Option[SessionId],
+      requestId: mcp.protocol.RequestId,
+      method: String,
+      params: Option[io.circe.JsonObject]
+  ): F[Unit]
 
 }
 
@@ -230,10 +250,10 @@ private[session] class HttpSessionManager[F[_]: Async](
     for {
       sessionIdOpt <- if sessionBased then SessionId.generate[F]().map(Some(_)) else Async[F].pure(None)
       postQueue <- Queue.bounded[F, Option[JsonRpcResponse]](queueSize)
-      persistentQueue <- Queue.bounded[F, Option[JsonRpcResponse]](queueSize)
+      persistentQueue <- Queue.bounded[F, Option[io.circe.Json]](queueSize)
       requestQueue <- Queue.bounded[F, Option[JsonRpcRequest]](queueSize)
 
-      transport = new HttpSessionTransport[F](sessionIdOpt, this, requestQueue)
+      transport <- HttpSessionTransport[F](sessionIdOpt, this, requestQueue)
 
       serverFiber <- server.serve(transport).start
 
@@ -296,7 +316,7 @@ private[session] class HttpSessionManager[F[_]: Async](
   def getCapabilities(id: Option[SessionId]): F[Option[ClientCapabilities]] =
     sessionsRef.get.map(_.get(id).flatMap(_.capabilities))
 
-  def appendEvent(id: Option[SessionId], msg: JsonRpcResponse): F[EventId] =
+  def appendEvent(id: Option[SessionId], msg: io.circe.Json): F[EventId] =
     sessionsRef.modify { sessions =>
       sessions.get(id) match {
         case Some(state) =>
@@ -313,10 +333,10 @@ private[session] class HttpSessionManager[F[_]: Async](
       }
     }
 
-  def logEvent(id: Option[SessionId], msg: JsonRpcResponse): F[Unit] =
+  def logEvent(id: Option[SessionId], msg: io.circe.Json): F[Unit] =
     appendEvent(id, msg).void
 
-  def getEventsSince(id: Option[SessionId], eventId: EventId): F[Vector[(EventId, JsonRpcResponse)]] =
+  def getEventsSince(id: Option[SessionId], eventId: EventId): F[Vector[(EventId, io.circe.Json)]] =
     sessionsRef.get.map { sessions =>
       sessions.get(id) match {
         case Some(state) =>
@@ -334,7 +354,7 @@ private[session] class HttpSessionManager[F[_]: Async](
         Async[F].unit
     }
 
-  def enqueuePersistent(id: Option[SessionId], msg: JsonRpcResponse): F[Unit] =
+  def enqueuePersistent(id: Option[SessionId], msg: io.circe.Json): F[Unit] =
     getSession(id).flatMap {
       case Some(session) =>
         session.persistentQueue.offer(Some(msg)).void
@@ -349,4 +369,21 @@ private[session] class HttpSessionManager[F[_]: Async](
       case None =>
         Async[F].unit
     }
+
+  def sendServerRequest(
+      id: Option[SessionId],
+      requestId: mcp.protocol.RequestId,
+      method: String,
+      params: Option[io.circe.JsonObject]
+  ): F[Unit] = {
+    import io.circe.*
+    import io.circe.syntax.*
+    val requestJson = JsonObject(
+      "jsonrpc" -> Json.fromString(Constants.JSONRPC_VERSION),
+      "id" -> requestId.asJson,
+      "method" -> Json.fromString(method),
+      "params" -> params.asJson
+    ).asJson
+    enqueuePersistent(id, requestJson)
+  }
 }

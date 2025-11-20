@@ -98,6 +98,8 @@ enum JsonRpcResponse {
   case Response(jsonrpc: String, id: RequestId, result: JsonObject)
   case Error(jsonrpc: String, id: Option[RequestId], error: ErrorData)
   case Notification(jsonrpc: String, method: String, params: Option[JsonObject])
+
+  def json: Json = (this: JsonRpcResponse).asJson
 }
 
 object JsonRpcResponse {
