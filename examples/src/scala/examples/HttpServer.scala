@@ -8,7 +8,7 @@ import mcp.server.McpServer
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.server.middleware.CORS
 import examples.tools.{AddTool, EchoTool, LogAndProgressTool}
-import examples.resources.ServerConfigResource
+import examples.resources.{FileTemplateResource, ServerConfigResource}
 import examples.prompts.GreetingPrompt
 
 import scala.concurrent.duration.*
@@ -25,6 +25,7 @@ object HttpServer extends IOApp {
       info = Implementation("http-mcp-server", "1.0.0"),
       tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
       resources = List(ServerConfigResource[IO]),
+      resourceTemplates = List(FileTemplateResource[IO]()),
       prompts = List(GreetingPrompt[IO])
     )
 

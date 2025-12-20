@@ -167,38 +167,66 @@ object ToolDef {
     )(using inputSchema, Some(outputSchema))
 }
 
+/** Resource content encoding mode.
+  *
+  * Determines how the resource output is serialized in the response.
+  */
+enum ResourceEncoding {
+
+  /** Text/JSON content - output is JSON-encoded */
+  case Text
+
+  /** Binary content - output (Array[Byte]) is base64-encoded */
+  case Binary
+}
+
 /** A resource definition with typed output.
   *
   * This is an applicative data structure for resources:
-  *   - Specification (URI, name, description, MIME type)
-  *   - Type-safe handler (=> F[Output])
+  *   - Specification (URI, name, description, MIME type, metadata)
+  *   - Type-safe handler (ResourceContext[F] => F[Output])
   *
-  * The handler returns typed data, which is automatically serialized based on MIME type.
+  * The handler receives a ResourceContext providing logging and roots access. The output is automatically serialized based on the encoding
+  * mode.
   *
   * @tparam F
   *   Effect type (e.g., IO)
   * @tparam Output
-  *   Output type (must have Encoder)
+  *   Output type (must have Encoder for Text, or Array[Byte] for Binary)
   * @param uri
   *   Unique URI for the resource
   * @param name
   *   Human-readable name
+  * @param title
+  *   Optional display title (if not provided, name is used for display)
   * @param description
   *   Optional description
   * @param mimeType
-  *   Optional MIME type (defaults to "text/plain")
+  *   Optional MIME type (defaults to "application/json" for Text, "application/octet-stream" for Binary)
+  * @param annotations
+  *   Optional annotations (audience, priority, lastModified)
+  * @param size
+  *   Optional size in bytes (hint for clients)
+  * @param icons
+  *   Optional icons for UI display
+  * @param encoding
+  *   Content encoding mode (Text or Binary)
   * @param handler
-  *   Function to read the resource (by-name parameter for lazy evaluation)
+  *   Function to read the resource, receives ResourceContext for logging/roots access
   * @param outputEncoder
-  *   Encoder for serializing output
+  *   Encoder for serializing output (for Text encoding)
   */
 case class ResourceDef[F[_], Output](
     uri: String,
     name: String,
+    title: Option[String] = None,
     description: Option[String] = None,
     mimeType: Option[String] = None,
+    annotations: Option[Annotations] = None,
+    size: Option[Long] = None,
     icons: Option[List[Icon]] = None,
-    handler: () => F[Output]
+    encoding: ResourceEncoding = ResourceEncoding.Text,
+    handler: ResourceContext[F] => F[Output]
 )(using val outputEncoder: Encoder[Output]) {
 
   /** Convert to protocol Resource type for listing */
@@ -206,25 +234,48 @@ case class ResourceDef[F[_], Output](
     ProtocolResource(
       uri = uri,
       name = name,
+      title = title,
       description = description,
       mimeType = mimeType,
+      annotations = annotations,
+      size = size,
       icons = icons
     )
 
-  /** Read the resource contents, handling encoding internally */
-  def read(using F: ApplicativeError[F, Throwable]): F[ReadResourceResult] =
-    handler()
+  /** Read the resource contents, handling encoding internally.
+    *
+    * @param ctx
+    *   Resource context providing logging and roots access
+    */
+  def read(ctx: ResourceContext[F])(using F: ApplicativeError[F, Throwable]): F[ReadResourceResult] =
+    handler(ctx)
       .map { output =>
-        val text = outputEncoder(output).spaces2
-        ReadResourceResult(
-          contents = List(
-            ResourceContents.Text(
-              uri = uri,
-              text = text,
-              mimeType = mimeType.orElse(Some("application/json"))
+        encoding match {
+          case ResourceEncoding.Text =>
+            val text = outputEncoder(output).spaces2
+            ReadResourceResult(
+              contents = List(
+                ResourceContents.Text(
+                  uri = uri,
+                  text = text,
+                  mimeType = mimeType.orElse(Some("application/json"))
+                )
+              )
             )
-          )
-        )
+          case ResourceEncoding.Binary =>
+            // For binary encoding, Output should be Array[Byte]
+            val bytes = output.asInstanceOf[Array[Byte]]
+            val base64 = java.util.Base64.getEncoder.encodeToString(bytes)
+            ReadResourceResult(
+              contents = List(
+                ResourceContents.Blob(
+                  uri = uri,
+                  blob = base64,
+                  mimeType = mimeType.orElse(Some("application/octet-stream"))
+                )
+              )
+            )
+        }
       }
       .handleErrorWith { error =>
         F.pure(
@@ -239,6 +290,105 @@ case class ResourceDef[F[_], Output](
           )
         )
       }
+}
+
+/** A resource template definition for dynamic parameterized resources.
+  *
+  * Resource templates use URI patterns (RFC 6570) to match requests and dynamically resolve them to concrete resources. The resolver
+  * function receives extracted template variables and returns an optional ResourceDef.
+  *
+  * Example:
+  * {{{
+  * ResourceTemplateDef[IO](
+  *   uriTemplate = "file:///{path}",
+  *   name = "Workspace Files",
+  *   description = Some("Read any file in workspace")
+  * ) { (params, ctx) =>
+  *   val path = params.getOrElse("path", "")
+  *   IO.pure(Some(
+  *     ResourceDef[IO, String](
+  *       uri = s"file:///$path",
+  *       name = path,
+  *       handler = _ => IO(Files.readString(Paths.get(path)))
+  *     )
+  *   ))
+  * }
+  * }}}
+  *
+  * @tparam F
+  *   Effect type (e.g., IO)
+  * @param uriTemplate
+  *   RFC 6570 URI template pattern (e.g., "file:///{path}")
+  * @param name
+  *   Human-readable name for this template
+  * @param title
+  *   Optional display title
+  * @param description
+  *   Optional description
+  * @param mimeType
+  *   Optional default MIME type for resolved resources
+  * @param annotations
+  *   Optional annotations (audience, priority)
+  * @param icons
+  *   Optional icons for UI display
+  * @param resolver
+  *   Function that resolves template variables to a concrete ResourceDef
+  */
+case class ResourceTemplateDef[F[_]](
+    uriTemplate: String,
+    name: String,
+    title: Option[String] = None,
+    description: Option[String] = None,
+    mimeType: Option[String] = None,
+    annotations: Option[Annotations] = None,
+    icons: Option[List[Icon]] = None,
+    resolver: (Map[String, String], ResourceContext[F]) => F[Option[ResourceDef[F, ?]]]
+) {
+
+  /** The parsed URI template. Parsing is done once at construction time. */
+  lazy val parsedTemplate: Either[String, UriTemplate] =
+    UriTemplate.parse(uriTemplate)
+
+  /** Check if a URI matches this template pattern. */
+  def matches(uri: String): Boolean =
+    parsedTemplate.exists(_.matches(uri))
+
+  /** Extract variables from a URI that matches this template.
+    *
+    * @param uri
+    *   The URI to extract from
+    * @return
+    *   Some(variables) if the URI matches, None otherwise
+    */
+  def extract(uri: String): Option[Map[String, String]] =
+    parsedTemplate.toOption.flatMap(_.extract(uri))
+
+  /** Convert to protocol ResourceTemplate type for listing. */
+  def toResourceTemplate: ResourceTemplate =
+    ResourceTemplate(
+      uriTemplate = uriTemplate,
+      name = name,
+      title = title,
+      description = description,
+      mimeType = mimeType,
+      annotations = annotations,
+      icons = icons
+    )
+
+  /** Resolve a URI to a concrete ResourceDef.
+    *
+    * @param uri
+    *   The URI to resolve
+    * @param ctx
+    *   Resource context for logging and roots access
+    * @return
+    *   Some(ResourceDef) if the URI matches and resolves, None otherwise
+    */
+  def resolve(uri: String, ctx: ResourceContext[F])(using F: cats.Monad[F]): F[Option[ResourceDef[F, ?]]] =
+    extract(uri) match {
+      case Some(vars) => resolver(vars, ctx)
+      case None       => F.pure(None)
+    }
 }
 
 /** A prompt definition with typed arguments.

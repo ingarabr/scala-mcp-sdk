@@ -69,6 +69,8 @@ object McpServer {
     *   List of tool definitions (existential types)
     * @param resources
     *   List of resource definitions (existential types)
+    * @param resourceTemplates
+    *   List of resource template definitions for dynamic resources
     * @param prompts
     *   List of prompt definitions (existential types)
     * @return
@@ -78,6 +80,7 @@ object McpServer {
       info: Implementation,
       tools: List[ToolDef[F, _, _]] = Nil,
       resources: List[ResourceDef[F, _]] = Nil,
+      resourceTemplates: List[ResourceTemplateDef[F]] = Nil,
       prompts: List[PromptDef[F, _]] = Nil
   ): CatsResource[F, McpServer[F]] =
     CatsResource.eval {
@@ -86,6 +89,7 @@ object McpServer {
           serverInfo = info,
           toolsMap = tools.map(t => t.name -> t).toMap,
           resourcesMap = resources.map(r => r.uri -> r).toMap,
+          resourceTemplates = resourceTemplates,
           promptsMap = prompts.map(p => p.name -> p).toMap,
           connectionState = connectionState
         )
@@ -104,18 +108,21 @@ private class McpServerImpl[F[_]: Async](
     val serverInfo: Implementation,
     toolsMap: Map[String, ToolDef[F, _, _]],
     resourcesMap: Map[String, ResourceDef[F, _]],
+    resourceTemplates: List[ResourceTemplateDef[F]],
     promptsMap: Map[String, PromptDef[F, _]],
     connectionState: Ref[F, ConnectionState]
 ) extends McpServer[F] {
 
   def info: Implementation = serverInfo
 
-  def capabilities: ServerCapabilities =
+  def capabilities: ServerCapabilities = {
+    val hasResources = resourcesMap.nonEmpty || resourceTemplates.nonEmpty
     ServerCapabilities(
       tools = if toolsMap.nonEmpty then Some(ToolsCapability(listChanged = Some(false))) else None,
-      resources = if resourcesMap.nonEmpty then Some(ResourcesCapability(subscribe = Some(false), listChanged = Some(false))) else None,
+      resources = if hasResources then Some(ResourcesCapability(subscribe = Some(false), listChanged = Some(false))) else None,
       prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(false))) else None
     )
+  }
 
   def serve(transport: Transport[F]): F[Unit] =
     transport.receive
@@ -193,8 +200,11 @@ private class McpServerImpl[F[_]: Async](
       case "resources/list" =>
         withCapabilities(_ => handleListResources())
 
+      case "resources/templates/list" =>
+        withCapabilities(_ => handleListResourceTemplates())
+
       case "resources/read" =>
-        withCapabilities(caps => handleReadResource(params, caps))
+        withCapabilities(caps => handleReadResource(params, transport, caps))
 
       case "prompts/list" =>
         withCapabilities(_ => handleListPrompts())
@@ -377,21 +387,66 @@ private class McpServerImpl[F[_]: Async](
     Async[F].pure(Right(result.asJsonObject))
   }
 
-  private def handleReadResource(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
+  private def handleListResourceTemplates(): F[Either[ErrorData, JsonObject]] = {
+    val result = ListResourceTemplatesResult(resourceTemplates = resourceTemplates.map(_.toResourceTemplate))
+    Async[F].pure(Right(result.asJsonObject))
+  }
+
+  private def handleReadResource(
+      params: Option[JsonObject],
+      transport: Transport[F],
+      capabilities: ClientCapabilities
+  ): F[Either[ErrorData, JsonObject]] = {
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[ReadResourceRequest] match {
       case Right(request) =>
+        // First check static resources (exact match)
         resourcesMap.get(request.uri) match {
           case Some(resourceDef) =>
-            resourceDef.read.map(result => Right(result.asJsonObject))
+            // Get minimum log level and roots from connection state
+            connectionState.get.flatMap { state =>
+              val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
+              resourceDef.read(context).map(result => Right(result.asJsonObject))
+            }
           case None =>
-            ErrorData(code = Constants.INVALID_PARAMS, message = s"Resource not found: ${request.uri}").asError
+            // No static match - try templates
+            resolveFromTemplates(request.uri, transport)
         }
 
       case Left(error) =>
         ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid read resource request: ${error.getMessage}").asError
     }
   }
+
+  /** Try to resolve a URI using resource templates.
+    *
+    * Templates are checked in order; the first matching template that resolves to a ResourceDef is used.
+    */
+  private def resolveFromTemplates(uri: String, transport: Transport[F]): F[Either[ErrorData, JsonObject]] =
+    connectionState.get.flatMap { state =>
+      val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
+
+      // Find first matching template and try to resolve
+      def tryTemplates(remaining: List[ResourceTemplateDef[F]]): F[Either[ErrorData, JsonObject]] =
+        remaining match {
+          case Nil =>
+            ErrorData(code = Constants.INVALID_PARAMS, message = s"Resource not found: $uri").asError
+          case template :: rest =>
+            if template.matches(uri) then {
+              template.resolve(uri, context).flatMap {
+                case Some(resourceDef) =>
+                  resourceDef.read(context).map(result => Right(result.asJsonObject))
+                case None =>
+                  // Template matched but resolver returned None, try next template
+                  tryTemplates(rest)
+              }
+            } else {
+              tryTemplates(rest)
+            }
+        }
+
+      tryTemplates(resourceTemplates)
+    }
 
   private def handleListPrompts(): F[Either[ErrorData, JsonObject]] = {
     val result = ListPromptsResult(prompts = promptsMap.values.map(_.toPrompt).toList)

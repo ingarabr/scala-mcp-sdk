@@ -34,7 +34,7 @@ object ServerConfigResource {
           Icon(src = configIcon, mimeType = Some("image/svg+xml"), sizes = Some(List("any")))
         )
       ),
-      handler = () =>
+      handler = _ =>
         Async[F].pure(
           ServerConfig(
             name = "simple-server",
