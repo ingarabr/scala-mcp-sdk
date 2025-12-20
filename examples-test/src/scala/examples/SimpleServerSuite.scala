@@ -88,7 +88,7 @@ class SimpleServerSuite extends CatsEffectSuite {
         Some(
           JsonRpcRequest.Notification(
             jsonrpc = Constants.JSONRPC_VERSION,
-            method = "initialized",
+            method = "notifications/initialized",
             params = None
           )
         )
@@ -144,7 +144,7 @@ class SimpleServerSuite extends CatsEffectSuite {
               Some(
                 JsonRpcRequest.Notification(
                   jsonrpc = Constants.JSONRPC_VERSION,
-                  method = "initialized",
+                  method = "notifications/initialized",
                   params = None
                 )
               )
@@ -477,7 +477,7 @@ class SimpleServerSuite extends CatsEffectSuite {
 
             // Send initialized notification (no response expected per JSON-RPC spec)
             _ <- clientToServer.offer(
-              Some(JsonRpcRequest.Notification(Constants.JSONRPC_VERSION, "initialized", None))
+              Some(JsonRpcRequest.Notification(Constants.JSONRPC_VERSION, "notifications/initialized", None))
             )
 
             // Step 2: LLM discovers available tools

@@ -212,7 +212,7 @@ private class McpServerImpl[F[_]: Async](
   /** Handle notifications (fire and forget) */
   private def handleNotification(method: String, transport: Transport[F]): F[Unit] =
     method match {
-      case "initialized" =>
+      case "notifications/initialized" =>
         // Transition from Initialized to Operational state, preserving minLogLevel and roots
         connectionState.get.flatMap {
           case ConnectionState.Initialized(caps, minLogLevel, roots) =>
