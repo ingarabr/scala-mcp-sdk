@@ -69,7 +69,7 @@ class HttpIntegrationTest extends CatsEffectSuite {
               "id" -> Json.fromInt(0),
               "method" -> Json.fromString("initialize"),
               "params" -> Json.obj(
-                "protocolVersion" -> Json.fromString("2025-06-18"),
+                "protocolVersion" -> Json.fromString("2025-11-25"),
                 "capabilities" -> Json.obj(
                   "sampling" -> Json.obj(),
                   "elicitation" -> Json.obj(),
@@ -113,7 +113,7 @@ class HttpIntegrationTest extends CatsEffectSuite {
               )
               .putHeaders(
                 Header.Raw(CIString("Mcp-Session-Id"), sessionId),
-                Header.Raw(CIString("MCP-Protocol-Version"), "2025-06-18"),
+                Header.Raw(CIString("MCP-Protocol-Version"), "2025-11-25"),
                 Header.Raw(CIString("Content-Type"), "application/json")
               )
 
@@ -137,7 +137,7 @@ class HttpIntegrationTest extends CatsEffectSuite {
               )
               .putHeaders(
                 Header.Raw(CIString("Mcp-Session-Id"), sessionId),
-                Header.Raw(CIString("MCP-Protocol-Version"), "2025-06-18"),
+                Header.Raw(CIString("MCP-Protocol-Version"), "2025-11-25"),
                 Header.Raw(CIString("Content-Type"), "application/json")
               )
 
@@ -168,7 +168,7 @@ class HttpIntegrationTest extends CatsEffectSuite {
               )
               .putHeaders(
                 Header.Raw(CIString("Mcp-Session-Id"), sessionId),
-                Header.Raw(CIString("MCP-Protocol-Version"), "2025-06-18"),
+                Header.Raw(CIString("MCP-Protocol-Version"), "2025-11-25"),
                 Header.Raw(CIString("Content-Type"), "application/json")
               )
 

@@ -26,7 +26,7 @@ Accept: application/json, text/event-stream
   "id": 1,
   "method": "initialize",
   "params": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2025-11-25",
     "capabilities": {
       "roots": {
         "listChanged": true
@@ -65,7 +65,7 @@ Sec-Fetch-Site: same-site, Priority: u=0)
 {
   "method":"initialize",
   "params":{
-    "protocolVersion":"2025-06-18",
+    "protocolVersion":"2025-11-25",
     "capabilities":{"sampling":{},"elicitation":{},"roots":{"listChanged":true}},
     "clientInfo":{
       "name":"inspector-client",
@@ -90,7 +90,7 @@ Connection: keep-alive
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2025-11-25",
     "capabilities": {
       "tools": {},
       "resources": {},
@@ -123,7 +123,7 @@ Access-Control-Allow-Origin: *
   "jsonrpc":"2.0",
   "id":0,
   "result": {
-    "protocolVersion":"2025-06-18",
+    "protocolVersion":"2025-11-25",
     "capabilities":{
       "experimental":null,
       "logging":null,
@@ -154,7 +154,7 @@ POST http://localhost:8080/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 
 {
   "jsonrpc": "2.0",
@@ -194,7 +194,7 @@ POST http://localhost:8080/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 
 {
   "jsonrpc": "2.0",
@@ -247,7 +247,7 @@ POST http://localhost:8080/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 
 {
   "jsonrpc": "2.0",
@@ -302,7 +302,7 @@ data: {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Task c
 GET http://localhost:8080/mcp
 Accept: text/event-stream
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 ```
 
 **What happens:**
@@ -341,7 +341,7 @@ POST http://localhost:8080/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 
 {
   "jsonrpc": "2.0",
@@ -372,7 +372,7 @@ Content-Type: text/event-stream
 GET http://localhost:8080/mcp
 Accept: text/event-stream
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 Last-Event-ID: 101
 ```
 
@@ -413,7 +413,7 @@ data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"
 ```http
 DELETE http://localhost:8080/mcp
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 ```
 
 ```http
@@ -432,7 +432,7 @@ POST http://localhost:8080/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream
 Mcp-Session-Id: 550e8400-e29b-41d4-a716-446655440000
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 
 {
   "jsonrpc": "2.0",
@@ -470,7 +470,7 @@ Content-Type: application/json
 POST http://localhost:8080/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream
-MCP-Protocol-Version: 2025-06-18
+MCP-Protocol-Version: 2025-11-25
 
 {
   "jsonrpc": "2.0",
@@ -544,7 +544,7 @@ Content-Type: application/json
 | `Accept` | All POST | `application/json, text/event-stream` |
 | `Accept` | All GET | `text/event-stream` |
 | `Mcp-Session-Id` | After init | Session ID from server |
-| `MCP-Protocol-Version` | After init | Negotiated version (e.g., `2025-06-18`) |
+| `MCP-Protocol-Version` | After init | Negotiated version (e.g., `2025-11-25`) |
 | `Last-Event-ID` | GET reconnect | Last received event ID |
 
 ### HTTP Status Codes

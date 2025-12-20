@@ -121,6 +121,8 @@ case class Tool(
     outputSchema: Option[JsonSchemaType] = None,
     /** Optional annotations for tool behavior hints. */
     annotations: Option[ToolAnnotations] = None,
+    /** Optional set of sized icons that the client can display in a user interface. */
+    icons: Option[List[Icon]] = None,
     /** See General fields: _meta for notes on _meta usage. */
     _meta: Option[JsonObject] = None
 ) derives Codec.AsObject

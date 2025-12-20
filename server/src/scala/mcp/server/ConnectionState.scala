@@ -27,7 +27,7 @@ import mcp.protocol.{ClientCapabilities, LoggingLevel, Root}
   *   Shutdown
   * }}}
   *
-  * See: https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+  * See: https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
   */
 enum ConnectionState {
 

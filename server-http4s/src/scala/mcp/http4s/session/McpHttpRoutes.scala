@@ -33,7 +33,7 @@ case class RequestHeaders(
 
 /** HTTP routes for MCP protocol over HTTP/SSE.
   *
-  * Implements the MCP 2025-06-18 spec with:
+  * Implements the MCP 2025-11-25 spec with:
   *   - Single /mcp endpoint for all operations
   *   - Session management via Mcp-Session-Id header
   *   - Protocol version validation

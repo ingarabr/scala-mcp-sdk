@@ -20,6 +20,8 @@ case class Resource(
     size: Option[Long] = None,
     /** An optional title for display purposes. If not provided, the name should be used for display. */
     title: Option[String] = None,
+    /** Optional set of sized icons that the client can display in a user interface. */
+    icons: Option[List[Icon]] = None,
     /** See General fields: _meta for notes on _meta usage. */
     _meta: Option[JsonObject] = None
 ) derives Codec.AsObject
@@ -41,6 +43,8 @@ case class ResourceTemplate(
     annotations: Option[Annotations] = None,
     /** An optional title for display purposes. If not provided, the name should be used for display. */
     title: Option[String] = None,
+    /** Optional set of sized icons that the client can display in a user interface. */
+    icons: Option[List[Icon]] = None,
     /** See General fields: _meta for notes on _meta usage. */
     _meta: Option[JsonObject] = None
 ) derives Codec.AsObject

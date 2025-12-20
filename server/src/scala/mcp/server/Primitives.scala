@@ -24,7 +24,8 @@ final case class ToolDef[F[_], Input, Output] private (
     name: String,
     description: Option[String],
     handler: (Input, ToolContext[F]) => F[ToolOutput[Output]],
-    annotations: Option[ToolAnnotations] = None
+    annotations: Option[ToolAnnotations] = None,
+    icons: Option[List[Icon]] = None
 )(using
     val inputSchema: McpSchema[Input],
     val outputSchema: Option[McpSchema[Output]]
@@ -37,7 +38,8 @@ final case class ToolDef[F[_], Input, Output] private (
       description = description,
       inputSchema = inputSchema.jsonSchema,
       outputSchema = outputSchema.map(_.jsonSchema),
-      annotations = annotations
+      annotations = annotations,
+      icons = icons
     )
 
   /** Execute the tool with the given arguments, handling encoding/decoding internally */
@@ -119,7 +121,8 @@ object ToolDef {
   def unstructured[F[_], Input](
       name: String,
       description: Option[String] = None,
-      annotations: Option[ToolAnnotations] = None
+      annotations: Option[ToolAnnotations] = None,
+      icons: Option[List[Icon]] = None
   )(handler: (Input, ToolContext[F]) => F[List[Content]])(using
       schema: McpSchema[Input],
       F: cats.Functor[F]
@@ -128,7 +131,8 @@ object ToolDef {
       name = name,
       description = description,
       handler = (input, ctx) => F.map(handler(input, ctx))(ToolOutput.Unstructured(_)),
-      annotations = annotations
+      annotations = annotations,
+      icons = icons
     )(using schema, None)
 
   /** Create a tool that returns structured, typed data.
@@ -147,7 +151,8 @@ object ToolDef {
   def structured[F[_], Input, Output](
       name: String,
       description: Option[String] = None,
-      annotations: Option[ToolAnnotations] = None
+      annotations: Option[ToolAnnotations] = None,
+      icons: Option[List[Icon]] = None
   )(handler: (Input, ToolContext[F]) => F[Output])(using
       inputSchema: McpSchema[Input],
       outputSchema: McpSchema[Output],
@@ -157,7 +162,8 @@ object ToolDef {
       name = name,
       description = description,
       handler = (input, ctx) => F.map(handler(input, ctx))(ToolOutput.Structured(_)),
-      annotations = annotations
+      annotations = annotations,
+      icons = icons
     )(using inputSchema, Some(outputSchema))
 }
 
@@ -191,6 +197,7 @@ case class ResourceDef[F[_], Output](
     name: String,
     description: Option[String] = None,
     mimeType: Option[String] = None,
+    icons: Option[List[Icon]] = None,
     handler: () => F[Output]
 )(using val outputEncoder: Encoder[Output]) {
 
@@ -200,7 +207,8 @@ case class ResourceDef[F[_], Output](
       uri = uri,
       name = name,
       description = description,
-      mimeType = mimeType
+      mimeType = mimeType,
+      icons = icons
     )
 
   /** Read the resource contents, handling encoding internally */
@@ -260,6 +268,7 @@ case class PromptDef[F[_], Args](
     name: String,
     description: Option[String],
     arguments: List[PromptArgument],
+    icons: Option[List[Icon]] = None,
     handler: Args => F[List[PromptMessage]]
 )(using val argsDecoder: Decoder[Args]) {
 
@@ -268,7 +277,8 @@ case class PromptDef[F[_], Args](
     Prompt(
       name = name,
       description = description,
-      arguments = if arguments.isEmpty then None else Some(arguments)
+      arguments = if arguments.isEmpty then None else Some(arguments),
+      icons = icons
     )
 
   /** Get the prompt with the given arguments, handling decoding internally */

@@ -36,7 +36,7 @@ type Cursor = String
 
 object Constants {
   val JSONRPC_VERSION = "2.0"
-  val LATEST_PROTOCOL_VERSION = "2025-06-18"
+  val LATEST_PROTOCOL_VERSION = "2025-11-25"
 
   // Standard JSON-RPC error codes
   val PARSE_ERROR = -32700
