@@ -2,6 +2,7 @@ package examples.tools
 
 import cats.effect.*
 import io.circe.*
+import mcp.protocol.ToolAnnotations
 import mcp.schema.{McpSchema, description}
 import mcp.server.ToolDef
 
@@ -32,7 +33,15 @@ object AddTool {
   def apply[F[_]: Async]: ToolDef[F, Input, Output] =
     ToolDef.structured[F, Input, Output](
       name = "add",
-      description = Some("Add two numbers")
+      description = Some("Add two numbers"),
+      annotations = Some(
+        ToolAnnotations(
+          title = Some("Add Numbers"),
+          readOnlyHint = Some(true), // Pure computation, no side effects
+          idempotentHint = Some(true), // Same inputs always produce same output
+          openWorldHint = Some(false) // Deterministic, doesn't depend on external state
+        )
+      )
     ) { (input, _) =>
       Async[F].pure(Output(input.a + input.b))
     }

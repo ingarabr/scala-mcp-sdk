@@ -3,7 +3,7 @@ package examples.resources
 import cats.effect.*
 import io.circe.*
 import io.circe.generic.semiauto.*
-import mcp.protocol.Icon
+import mcp.protocol.{Annotations, Icon, Role}
 import mcp.server.ResourceDef
 
 /** Server configuration resource.
@@ -29,6 +29,12 @@ object ServerConfigResource {
       name = "Server Configuration",
       description = Some("Current server configuration"),
       mimeType = Some("application/json"),
+      annotations = Some(
+        Annotations(
+          audience = Some(List(Role.assistant)), // Primarily for the assistant to understand server context
+          priority = Some(0.8) // High priority - config is important for context
+        )
+      ),
       icons = Some(
         List(
           Icon(src = configIcon, mimeType = Some("image/svg+xml"), sizes = Some(List("any")))
