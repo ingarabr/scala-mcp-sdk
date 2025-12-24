@@ -276,14 +276,52 @@ private class McpServerImpl[F[_]: Async](
         ErrorData(code = Constants.METHOD_NOT_FOUND, message = s"Method not found: $method").asError
     }
 
+  private def fetchRoots(transport: Transport[F]): F[Unit] =
+    connectionState.get.flatMap {
+      case ConnectionState.Initialized(caps, logLevel, _, subs) =>
+        caps.roots match {
+          case Some(_) =>
+            transport.sendRequest("roots/list", None).flatMap {
+              case Right(resultObj) =>
+                resultObj.asJson.as[ListRootsResult] match {
+                  case Right(result) =>
+                    connectionState.set(ConnectionState.Initialized(caps, logLevel, Some(result.roots), subs))
+                  case Left(_) =>
+                    connectionState.set(ConnectionState.Initialized(caps, logLevel, None, subs))
+                }
+              case Left(_) =>
+                connectionState.set(ConnectionState.Initialized(caps, logLevel, None, subs))
+            }
+          case None => Async[F].unit
+        }
+      case ConnectionState.Operational(caps, logLevel, _, subs) =>
+        caps.roots match {
+          case Some(_) =>
+            transport.sendRequest("roots/list", None).flatMap {
+              case Right(resultObj) =>
+                resultObj.asJson.as[ListRootsResult] match {
+                  case Right(result) =>
+                    connectionState.set(ConnectionState.Operational(caps, logLevel, Some(result.roots), subs))
+                  case Left(_) =>
+                    connectionState.set(ConnectionState.Operational(caps, logLevel, None, subs))
+                }
+              case Left(_) =>
+                connectionState.set(ConnectionState.Operational(caps, logLevel, None, subs))
+            }
+          case None => Async[F].unit
+        }
+      case _ => Async[F].unit
+    }
+
   /** Handle notifications (fire and forget) */
   private def handleNotification(method: String, transport: Transport[F]): F[Unit] =
     method match {
       case "notifications/initialized" =>
-        // Transition from Initialized to Operational state, preserving minLogLevel, roots, and subscriptions
+        // Transition from Initialized to Operational state, then fetch roots if client supports them
         connectionState.get.flatMap {
           case ConnectionState.Initialized(caps, minLogLevel, roots, subs) =>
-            connectionState.set(ConnectionState.Operational(caps, minLogLevel, roots, subs))
+            connectionState.set(ConnectionState.Operational(caps, minLogLevel, roots, subs)) *>
+              fetchRoots(transport)
           case _ =>
             // Already operational or not yet initialized - ignore
             Async[F].unit
@@ -294,56 +332,10 @@ private class McpServerImpl[F[_]: Async](
         Async[F].unit
 
       case "notifications/roots/list_changed" =>
-        // Client notified us that roots changed - proactively fetch and cache new roots
-        connectionState.get.flatMap {
-          case ConnectionState.Initialized(caps, logLevel, _, subs) =>
-            caps.roots match {
-              case Some(_) =>
-                // Client supports roots - fetch fresh data
-                transport.sendRequest("roots/list", None).flatMap {
-                  case Right(resultObj) =>
-                    // Parse and cache the new roots
-                    resultObj.asJson.as[ListRootsResult] match {
-                      case Right(result) =>
-                        connectionState.set(ConnectionState.Initialized(caps, logLevel, Some(result.roots), subs))
-                      case Left(_) =>
-                        // Failed to parse - clear cache
-                        connectionState.set(ConnectionState.Initialized(caps, logLevel, None, subs))
-                    }
-                  case Left(_) =>
-                    // Failed to fetch - clear cache
-                    connectionState.set(ConnectionState.Initialized(caps, logLevel, None, subs))
-                }
-              case None =>
-                Async[F].unit // Client doesn't support roots - ignore
-            }
-          case ConnectionState.Operational(caps, logLevel, _, subs) =>
-            caps.roots match {
-              case Some(_) =>
-                // Client supports roots - fetch fresh data
-                transport.sendRequest("roots/list", None).flatMap {
-                  case Right(resultObj) =>
-                    // Parse and cache the new roots
-                    resultObj.asJson.as[ListRootsResult] match {
-                      case Right(result) =>
-                        connectionState.set(ConnectionState.Operational(caps, logLevel, Some(result.roots), subs))
-                      case Left(_) =>
-                        // Failed to parse - clear cache
-                        connectionState.set(ConnectionState.Operational(caps, logLevel, None, subs))
-                    }
-                  case Left(_) =>
-                    // Failed to fetch - clear cache
-                    connectionState.set(ConnectionState.Operational(caps, logLevel, None, subs))
-                }
-              case None =>
-                Async[F].unit // Client doesn't support roots - ignore
-            }
-          case _ =>
-            // Not initialized - ignore
-            Async[F].unit
-        }
+        // Client notified us that roots changed - fetch fresh roots
+        fetchRoots(transport)
 
-      case notif =>
+      case _ =>
         // Unknown notification, ignore
         Async[F].unit
     }

@@ -71,9 +71,7 @@ class HttpIntegrationTest extends CatsEffectSuite {
               "params" -> Json.obj(
                 "protocolVersion" -> Json.fromString("2025-11-25"),
                 "capabilities" -> Json.obj(
-                  "sampling" -> Json.obj(),
-                  "elicitation" -> Json.obj(),
-                  "roots" -> Json.obj("listChanged" -> Json.fromBoolean(true))
+                  "sampling" -> Json.obj()
                 ),
                 "clientInfo" -> Json.obj(
                   "name" -> Json.fromString("test-client"),
