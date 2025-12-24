@@ -5,7 +5,8 @@ import mcp.protocol.*
 import mcp.server.*
 import examples.tools.{AddTool, EchoTool, LogAndProgressTool}
 import examples.resources.{ServerConfigResource, TimestampResource}
-import examples.prompts.GreetingPrompt
+import examples.prompts.{GreetingPrompt, TranslatePrompt}
+import examples.completions.LanguageCompletion
 
 /** A simple example MCP server demonstrating the type-safe API.
   *
@@ -13,8 +14,9 @@ import examples.prompts.GreetingPrompt
   *   - Importing primitive definitions from separate modules
   *   - Creating a server with declarative configuration
   *   - Serving over stdio transport
+  *   - Argument completion for prompts
   *
-  * Each primitive (tool, resource, prompt) is defined in its own file, making them reusable and easy to maintain.
+  * Each primitive (tool, resource, prompt, completion) is defined in its own file, making them reusable and easy to maintain.
   */
 object SimpleServer extends IOApp.Simple {
 
@@ -23,7 +25,8 @@ object SimpleServer extends IOApp.Simple {
       info = Implementation("simple-server", "1.0.0"),
       tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
       resources = List(ServerConfigResource[IO], TimestampResource[IO]),
-      prompts = List(GreetingPrompt[IO])
+      prompts = List(GreetingPrompt[IO], TranslatePrompt[IO]),
+      completions = List(LanguageCompletion[IO])
     ).use { server =>
       StdioTransport[IO]().use(transport => server.serve(transport))
     }

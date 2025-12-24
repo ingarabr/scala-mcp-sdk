@@ -101,6 +101,8 @@ object McpServer {
     *   List of resource template definitions for dynamic resources
     * @param prompts
     *   List of prompt definitions (existential types)
+    * @param completions
+    *   List of completion providers for prompts and resource templates
     * @return
     *   Resource managing the server lifecycle
     */
@@ -109,7 +111,8 @@ object McpServer {
       tools: List[ToolDef[F, _, _]] = Nil,
       resources: List[ResourceDef[F, _]] = Nil,
       resourceTemplates: List[ResourceTemplateDef[F]] = Nil,
-      prompts: List[PromptDef[F, _]] = Nil
+      prompts: List[PromptDef[F, _]] = Nil,
+      completions: List[CompletionDef[F]] = Nil
   ): CatsResource[F, McpServer[F]] =
     CatsResource.eval {
       for {
@@ -121,6 +124,7 @@ object McpServer {
         resourcesMap = resources.map(r => r.uri -> r).toMap,
         resourceTemplates = resourceTemplates,
         promptsMap = prompts.map(p => p.name -> p).toMap,
+        completionProviders = completions,
         connectionState = connectionState,
         activeTransport = activeTransport
       )
@@ -140,6 +144,7 @@ private class McpServerImpl[F[_]: Async](
     resourcesMap: Map[String, ResourceDef[F, _]],
     resourceTemplates: List[ResourceTemplateDef[F]],
     promptsMap: Map[String, PromptDef[F, _]],
+    completionProviders: List[CompletionDef[F]],
     connectionState: Ref[F, ConnectionState],
     activeTransport: Ref[F, Option[Transport[F]]]
 ) extends McpServer[F] {
@@ -164,7 +169,8 @@ private class McpServerImpl[F[_]: Async](
     ServerCapabilities(
       tools = if toolsMap.nonEmpty then Some(ToolsCapability(listChanged = Some(true))) else None,
       resources = if hasResources then Some(ResourcesCapability(subscribe = Some(true), listChanged = Some(true))) else None,
-      prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(true))) else None
+      prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(true))) else None,
+      completions = if completionProviders.nonEmpty then Some(JsonObject.empty) else None
     )
   }
 
@@ -271,6 +277,9 @@ private class McpServerImpl[F[_]: Async](
 
       case "logging/setLevel" =>
         withCapabilities(_ => handleSetLevel(params))
+
+      case "completion/complete" =>
+        withCapabilities(_ => handleComplete(params))
 
       case _ =>
         ErrorData(code = Constants.METHOD_NOT_FOUND, message = s"Method not found: $method").asError
@@ -602,6 +611,41 @@ private class McpServerImpl[F[_]: Async](
         ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid get prompt request: ${error.getMessage}").asError
     }
   }
+
+  private def handleComplete(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[CompleteRequest] match {
+      case Right(request) =>
+        findCompletionProvider(request.ref) match {
+          case Some(provider) =>
+            provider.complete(request.argument).map(result => Right(result.asJsonObject))
+          case None =>
+            // No provider found - return empty completions (not an error per MCP spec)
+            Async[F].pure(Right(CompleteResult(completion = CompletionCompletion(values = Nil)).asJsonObject))
+        }
+
+      case Left(error) =>
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid completion request: ${error.getMessage}").asError
+    }
+  }
+
+  /** Find a completion provider matching the given reference.
+    *
+    * Matches by:
+    *   - For prompts: exact name match
+    *   - For resource templates: exact URI template match
+    */
+  private def findCompletionProvider(ref: CompletionReference): Option[CompletionDef[F]] =
+    completionProviders.find { provider =>
+      (provider.ref, ref) match {
+        case (CompletionReference.Prompt(name1, _), CompletionReference.Prompt(name2, _)) =>
+          name1 == name2
+        case (CompletionReference.ResourceTemplate(uri1), CompletionReference.ResourceTemplate(uri2)) =>
+          uri1 == uri2
+        case _ =>
+          false
+      }
+    }
 
   // ============================================================================
   // NOTIFICATION API

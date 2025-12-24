@@ -4,7 +4,7 @@ import cats.ApplicativeError
 import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
-import mcp.protocol.{Resource as ProtocolResource, *}
+import mcp.protocol.{JsonSchemaType, Resource as ProtocolResource, *}
 import mcp.schema.McpSchema
 
 /** A tool definition with typed input and optional typed output.
@@ -479,4 +479,154 @@ case class PromptDef[F[_], Args](
         )
     }
   }
+}
+
+object PromptDef {
+
+  /** Create a prompt with arguments derived from McpSchema.
+    *
+    * This factory method extracts argument specifications from the McpSchema's JSON schema, including descriptions from @description
+    * annotations on case class fields.
+    *
+    * Example:
+    * {{{
+    * @description("Translation prompt arguments")
+    * case class Args(
+    *   @description("Text to translate") text: String,
+    *   @description("Target language") language: String
+    * ) derives Codec.AsObject
+    * object Args {
+    *   given McpSchema[Args] = McpSchema.derived
+    * }
+    *
+    * PromptDef.derived[IO, Args](
+    *   name = "translate",
+    *   description = Some("Translate text to another language")
+    * ) { args =>
+    *   IO.pure(List(PromptMessage(...)))
+    * }
+    * }}}
+    *
+    * @param name
+    *   Unique name for the prompt
+    * @param description
+    *   Optional description
+    * @param icons
+    *   Optional icons for UI display
+    * @param handler
+    *   Function to generate prompt messages from typed arguments
+    */
+  def derived[F[_], Args](
+      name: String,
+      description: Option[String] = None,
+      icons: Option[List[Icon]] = None
+  )(handler: Args => F[List[PromptMessage]])(using schema: McpSchema[Args]): PromptDef[F, Args] = {
+    val arguments = extractArguments(schema.jsonSchema)
+    new PromptDef[F, Args](
+      name = name,
+      description = description,
+      arguments = arguments,
+      icons = icons,
+      handler = handler
+    )(using schema.decoder)
+  }
+
+  /** Extract PromptArgument list from a JSON schema. */
+  private def extractArguments(schema: JsonSchemaType.ObjectSchema): List[PromptArgument] = {
+    val requiredFields = schema.required.getOrElse(Nil).toSet
+    schema.properties
+      .getOrElse(Map.empty)
+      .map { case (fieldName, fieldSchema) =>
+        PromptArgument(
+          name = fieldName,
+          description = extractDescription(fieldSchema),
+          required = Some(requiredFields.contains(fieldName))
+        )
+      }
+      .toList
+      .sortBy(_.name) // Consistent ordering
+  }
+
+  /** Extract description from a JsonSchemaType. */
+  private def extractDescription(schema: JsonSchemaType): Option[String] =
+    schema match {
+      case s: JsonSchemaType.StringSchema  => s.description
+      case s: JsonSchemaType.IntegerSchema => s.description
+      case s: JsonSchemaType.NumberSchema  => s.description
+      case s: JsonSchemaType.BooleanSchema => s.description
+      case s: JsonSchemaType.ArraySchema   => s.description
+      case s: JsonSchemaType.ObjectSchema  => s.description
+      case _                               => None
+    }
+}
+
+/** A completion provider for prompt arguments or resource template variables.
+  *
+  * Completion providers enable auto-completion for:
+  *   - Prompt arguments (e.g., completing language names for a "translate" prompt)
+  *   - Resource template variables (e.g., completing file paths)
+  *
+  * Each provider is associated with a specific reference (prompt or resource template) and handles completion requests for arguments of
+  * that reference.
+  *
+  * @tparam F
+  *   Effect type (e.g., IO)
+  * @param ref
+  *   The completion reference (prompt or resource template)
+  * @param handler
+  *   Function that takes (argument name, current value) and returns completions
+  */
+case class CompletionDef[F[_]](
+    ref: CompletionReference,
+    handler: (String, String) => F[CompletionCompletion]
+) {
+
+  /** Complete an argument value.
+    *
+    * @param argument
+    *   The argument being completed (name and current value)
+    * @return
+    *   Completion suggestions
+    */
+  def complete(argument: CompletionArgument)(using F: ApplicativeError[F, Throwable]): F[CompleteResult] =
+    handler(argument.name, argument.value)
+      .map(completion => CompleteResult(completion = completion))
+      .handleError { error =>
+        CompleteResult(completion = CompletionCompletion(values = Nil))
+      }
+}
+
+object CompletionDef {
+
+  /** Create a completion provider for a prompt's arguments.
+    *
+    * @param promptName
+    *   The name of the prompt to provide completions for
+    * @param handler
+    *   Function taking (argument name, current value) returning completions
+    */
+  def forPrompt[F[_]](
+      promptName: String,
+      handler: (String, String) => F[CompletionCompletion]
+  ): CompletionDef[F] =
+    CompletionDef(
+      ref = CompletionReference.Prompt(name = promptName),
+      handler = handler
+    )
+
+  /** Create a completion provider for a resource template's variables.
+    *
+    * @param uriTemplate
+    *   The parsed URI template (use UriTemplate.parse to create)
+    * @param handler
+    *   Function taking (variable name, current value) returning completions
+    */
+  def forResourceTemplate[F[_]](
+      uriTemplate: UriTemplate,
+      handler: (String, String) => F[CompletionCompletion]
+  ): CompletionDef[F] =
+    CompletionDef(
+      ref = CompletionReference.ResourceTemplate(uri = uriTemplate.template),
+      handler = handler
+    )
 }
