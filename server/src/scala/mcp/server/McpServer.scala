@@ -58,6 +58,34 @@ trait McpServer[F[_]] {
 
   /** Get the server implementation info */
   def info: Implementation
+
+  /** Notify subscribed clients that a resource has been updated.
+    *
+    * Only sends notification if the URI has active subscriptions. No-op if not serving.
+    *
+    * @param uri
+    *   The URI of the updated resource
+    */
+  def notifyResourceUpdated(uri: ResourceUri): F[Unit]
+
+  /** Notify clients that the resource list has changed.
+    *
+    * Sends notification to all connected clients regardless of subscriptions. Use when resources are added, removed, or their metadata
+    * changes.
+    */
+  def notifyResourceListChanged(): F[Unit]
+
+  /** Notify clients that the tool list has changed.
+    *
+    * Sends notification to all connected clients. Use when tools are added, removed, or their metadata changes.
+    */
+  def notifyToolListChanged(): F[Unit]
+
+  /** Notify clients that the prompt list has changed.
+    *
+    * Sends notification to all connected clients. Use when prompts are added, removed, or their metadata changes.
+    */
+  def notifyPromptListChanged(): F[Unit]
 }
 object McpServer {
 
@@ -84,16 +112,18 @@ object McpServer {
       prompts: List[PromptDef[F, _]] = Nil
   ): CatsResource[F, McpServer[F]] =
     CatsResource.eval {
-      Ref.of[F, ConnectionState](ConnectionState.Uninitialized).map { connectionState =>
-        new McpServerImpl[F](
-          serverInfo = info,
-          toolsMap = tools.map(t => t.name -> t).toMap,
-          resourcesMap = resources.map(r => r.uri -> r).toMap,
-          resourceTemplates = resourceTemplates,
-          promptsMap = prompts.map(p => p.name -> p).toMap,
-          connectionState = connectionState
-        )
-      }
+      for {
+        connectionState <- Ref.of[F, ConnectionState](ConnectionState.Uninitialized)
+        activeTransport <- Ref.of[F, Option[Transport[F]]](None)
+      } yield new McpServerImpl[F](
+        serverInfo = info,
+        toolsMap = tools.map(t => t.name -> t).toMap,
+        resourcesMap = resources.map(r => r.uri -> r).toMap,
+        resourceTemplates = resourceTemplates,
+        promptsMap = prompts.map(p => p.name -> p).toMap,
+        connectionState = connectionState,
+        activeTransport = activeTransport
+      )
     }
 }
 
@@ -110,27 +140,48 @@ private class McpServerImpl[F[_]: Async](
     resourcesMap: Map[String, ResourceDef[F, _]],
     resourceTemplates: List[ResourceTemplateDef[F]],
     promptsMap: Map[String, PromptDef[F, _]],
-    connectionState: Ref[F, ConnectionState]
+    connectionState: Ref[F, ConnectionState],
+    activeTransport: Ref[F, Option[Transport[F]]]
 ) extends McpServer[F] {
+
+  /** Merged stream of all resource updates from resources and templates. */
+  private val resourceUpdates: fs2.Stream[F, ResourceUri] = {
+    // Static resources: map Unit emissions to their URI
+    val staticUpdates = resourcesMap.values.toList.map { r =>
+      r.updates.as(ResourceUri(r.uri))
+    }
+    // Template resources: already emit ResourceUri
+    val templateUpdates = resourceTemplates.map(_.updates)
+
+    // Merge all streams
+    fs2.Stream.emits(staticUpdates ++ templateUpdates).parJoinUnbounded
+  }
 
   def info: Implementation = serverInfo
 
   def capabilities: ServerCapabilities = {
     val hasResources = resourcesMap.nonEmpty || resourceTemplates.nonEmpty
     ServerCapabilities(
-      tools = if toolsMap.nonEmpty then Some(ToolsCapability(listChanged = Some(false))) else None,
-      resources = if hasResources then Some(ResourcesCapability(subscribe = Some(false), listChanged = Some(false))) else None,
-      prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(false))) else None
+      tools = if toolsMap.nonEmpty then Some(ToolsCapability(listChanged = Some(true))) else None,
+      resources = if hasResources then Some(ResourcesCapability(subscribe = Some(true), listChanged = Some(true))) else None,
+      prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(true))) else None
     )
   }
 
   def serve(transport: Transport[F]): F[Unit] =
-    transport.receive
-      .evalMap(handleMessage(_, transport))
-      .collect { case Some(msg) => msg }
-      .foreach(response => transport.send(response))
-      .compile
-      .drain
+    Async[F].bracket(activeTransport.set(Some(transport))) { _ =>
+      // Main message handling stream
+      val messageStream = transport.receive
+        .evalMap(handleMessage(_, transport))
+        .collect { case Some(msg) => msg }
+        .foreach(response => transport.send(response))
+
+      // Resource updates stream - sends notifications for subscribed URIs
+      val updatesStream = resourceUpdates.evalMap(notifyResourceUpdated)
+
+      // Run both streams concurrently - updates stream runs alongside message handling
+      messageStream.concurrently(updatesStream).compile.drain
+    }(_ => activeTransport.set(None))
 
   /** Handle an incoming JSON-RPC request and optionally generate a response.
     *
@@ -206,6 +257,12 @@ private class McpServerImpl[F[_]: Async](
       case "resources/read" =>
         withCapabilities(caps => handleReadResource(params, transport, caps))
 
+      case "resources/subscribe" =>
+        withCapabilities(_ => handleSubscribe(params, transport))
+
+      case "resources/unsubscribe" =>
+        withCapabilities(_ => handleUnsubscribe(params))
+
       case "prompts/list" =>
         withCapabilities(_ => handleListPrompts())
 
@@ -223,10 +280,10 @@ private class McpServerImpl[F[_]: Async](
   private def handleNotification(method: String, transport: Transport[F]): F[Unit] =
     method match {
       case "notifications/initialized" =>
-        // Transition from Initialized to Operational state, preserving minLogLevel and roots
+        // Transition from Initialized to Operational state, preserving minLogLevel, roots, and subscriptions
         connectionState.get.flatMap {
-          case ConnectionState.Initialized(caps, minLogLevel, roots) =>
-            connectionState.set(ConnectionState.Operational(caps, minLogLevel, roots))
+          case ConnectionState.Initialized(caps, minLogLevel, roots, subs) =>
+            connectionState.set(ConnectionState.Operational(caps, minLogLevel, roots, subs))
           case _ =>
             // Already operational or not yet initialized - ignore
             Async[F].unit
@@ -239,7 +296,7 @@ private class McpServerImpl[F[_]: Async](
       case "notifications/roots/list_changed" =>
         // Client notified us that roots changed - proactively fetch and cache new roots
         connectionState.get.flatMap {
-          case ConnectionState.Initialized(caps, logLevel, _) =>
+          case ConnectionState.Initialized(caps, logLevel, _, subs) =>
             caps.roots match {
               case Some(_) =>
                 // Client supports roots - fetch fresh data
@@ -248,19 +305,19 @@ private class McpServerImpl[F[_]: Async](
                     // Parse and cache the new roots
                     resultObj.asJson.as[ListRootsResult] match {
                       case Right(result) =>
-                        connectionState.set(ConnectionState.Initialized(caps, logLevel, Some(result.roots)))
+                        connectionState.set(ConnectionState.Initialized(caps, logLevel, Some(result.roots), subs))
                       case Left(_) =>
                         // Failed to parse - clear cache
-                        connectionState.set(ConnectionState.Initialized(caps, logLevel, None))
+                        connectionState.set(ConnectionState.Initialized(caps, logLevel, None, subs))
                     }
                   case Left(_) =>
                     // Failed to fetch - clear cache
-                    connectionState.set(ConnectionState.Initialized(caps, logLevel, None))
+                    connectionState.set(ConnectionState.Initialized(caps, logLevel, None, subs))
                 }
               case None =>
                 Async[F].unit // Client doesn't support roots - ignore
             }
-          case ConnectionState.Operational(caps, logLevel, _) =>
+          case ConnectionState.Operational(caps, logLevel, _, subs) =>
             caps.roots match {
               case Some(_) =>
                 // Client supports roots - fetch fresh data
@@ -269,14 +326,14 @@ private class McpServerImpl[F[_]: Async](
                     // Parse and cache the new roots
                     resultObj.asJson.as[ListRootsResult] match {
                       case Right(result) =>
-                        connectionState.set(ConnectionState.Operational(caps, logLevel, Some(result.roots)))
+                        connectionState.set(ConnectionState.Operational(caps, logLevel, Some(result.roots), subs))
                       case Left(_) =>
                         // Failed to parse - clear cache
-                        connectionState.set(ConnectionState.Operational(caps, logLevel, None))
+                        connectionState.set(ConnectionState.Operational(caps, logLevel, None, subs))
                     }
                   case Left(_) =>
                     // Failed to fetch - clear cache
-                    connectionState.set(ConnectionState.Operational(caps, logLevel, None))
+                    connectionState.set(ConnectionState.Operational(caps, logLevel, None, subs))
                 }
               case None =>
                 Async[F].unit // Client doesn't support roots - ignore
@@ -328,10 +385,10 @@ private class McpServerImpl[F[_]: Async](
     paramsJson.as[SetLevelRequest] match {
       case Right(request) =>
         connectionState.get.flatMap {
-          case ConnectionState.Initialized(caps, _, roots) =>
-            connectionState.set(ConnectionState.Initialized(caps, Some(request.level), roots)).as(Right(EmptyResult().asJsonObject))
-          case ConnectionState.Operational(caps, _, roots) =>
-            connectionState.set(ConnectionState.Operational(caps, Some(request.level), roots)).as(Right(EmptyResult().asJsonObject))
+          case ConnectionState.Initialized(caps, _, roots, subs) =>
+            connectionState.set(ConnectionState.Initialized(caps, Some(request.level), roots, subs)).as(Right(EmptyResult().asJsonObject))
+          case ConnectionState.Operational(caps, _, roots, subs) =>
+            connectionState.set(ConnectionState.Operational(caps, Some(request.level), roots, subs)).as(Right(EmptyResult().asJsonObject))
 
           case _ =>
             // Not initialized yet - this shouldn't happen in practice as withCapabilities should guard it,
@@ -448,6 +505,91 @@ private class McpServerImpl[F[_]: Async](
       tryTemplates(resourceTemplates)
     }
 
+  private def validateResourceExists(uri: ResourceUri, transport: Transport[F]): F[Boolean] =
+    // First check static resources
+    if resourcesMap.contains(uri.value) then {
+      Async[F].pure(true)
+    } else {
+      // Try templates with full resolution
+      connectionState.get.flatMap { state =>
+        val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
+
+        def tryTemplates(remaining: List[ResourceTemplateDef[F]]): F[Boolean] =
+          remaining match {
+            case Nil              => Async[F].pure(false)
+            case template :: rest =>
+              if template.matches(uri.value) then {
+                template.resolve(uri.value, context).flatMap {
+                  case Some(_) => Async[F].pure(true)
+                  case None    => tryTemplates(rest)
+                }
+              } else {
+                tryTemplates(rest)
+              }
+          }
+
+        tryTemplates(resourceTemplates)
+      }
+    }
+
+  private def handleSubscribe(
+      params: Option[JsonObject],
+      transport: Transport[F]
+  ): F[Either[ErrorData, JsonObject]] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[SubscribeRequest] match {
+      case Right(request) =>
+        val uri = ResourceUri(request.uri)
+        validateResourceExists(uri, transport).flatMap {
+          case true =>
+            addSubscription(uri).as(Right(EmptyResult().asJsonObject))
+          case false =>
+            ErrorData(
+              code = Constants.INVALID_PARAMS,
+              message = s"Resource not found: ${request.uri}"
+            ).asError
+        }
+
+      case Left(error) =>
+        ErrorData(
+          code = Constants.INVALID_PARAMS,
+          message = s"Invalid subscribe request: ${error.getMessage}"
+        ).asError
+    }
+  }
+
+  private def handleUnsubscribe(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[UnsubscribeRequest] match {
+      case Right(request) =>
+        removeSubscription(ResourceUri(request.uri)).as(Right(EmptyResult().asJsonObject))
+
+      case Left(error) =>
+        ErrorData(
+          code = Constants.INVALID_PARAMS,
+          message = s"Invalid unsubscribe request: ${error.getMessage}"
+        ).asError
+    }
+  }
+
+  private def addSubscription(uri: ResourceUri): F[Unit] =
+    connectionState.update {
+      case ConnectionState.Initialized(caps, logLevel, roots, subs) =>
+        ConnectionState.Initialized(caps, logLevel, roots, subs + uri)
+      case ConnectionState.Operational(caps, logLevel, roots, subs) =>
+        ConnectionState.Operational(caps, logLevel, roots, subs + uri)
+      case other => other
+    }
+
+  private def removeSubscription(uri: ResourceUri): F[Unit] =
+    connectionState.update {
+      case ConnectionState.Initialized(caps, logLevel, roots, subs) =>
+        ConnectionState.Initialized(caps, logLevel, roots, subs - uri)
+      case ConnectionState.Operational(caps, logLevel, roots, subs) =>
+        ConnectionState.Operational(caps, logLevel, roots, subs - uri)
+      case other => other
+    }
+
   private def handleListPrompts(): F[Either[ErrorData, JsonObject]] = {
     val result = ListPromptsResult(prompts = promptsMap.values.map(_.toPrompt).toList)
     Async[F].pure(Right(result.asJsonObject))
@@ -468,6 +610,59 @@ private class McpServerImpl[F[_]: Async](
         ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid get prompt request: ${error.getMessage}").asError
     }
   }
+
+  // ============================================================================
+  // NOTIFICATION API
+  // ============================================================================
+
+  def notifyResourceUpdated(uri: ResourceUri): F[Unit] =
+    for {
+      state <- connectionState.get
+      transportOpt <- activeTransport.get
+      _ <- (transportOpt, state.resourceSubscriptions.contains(uri)) match {
+        case (Some(transport), true) =>
+          val notification = JsonRpcResponse.Notification(
+            jsonrpc = Constants.JSONRPC_VERSION,
+            method = "notifications/resources/updated",
+            params = Some(ResourceUpdatedNotification(uri.value).asJsonObject)
+          )
+          transport.send(notification)
+        case _ =>
+          Async[F].unit
+      }
+    } yield ()
+
+  def notifyResourceListChanged(): F[Unit] =
+    sendNotification(
+      "notifications/resources/list_changed",
+      ResourceListChangedNotification().asJsonObject
+    )
+
+  def notifyToolListChanged(): F[Unit] =
+    sendNotification(
+      "notifications/tools/list_changed",
+      ToolListChangedNotification().asJsonObject
+    )
+
+  def notifyPromptListChanged(): F[Unit] =
+    sendNotification(
+      "notifications/prompts/list_changed",
+      PromptListChangedNotification().asJsonObject
+    )
+
+  /** Send a notification to the connected client if a transport is active. */
+  private def sendNotification(method: String, params: JsonObject): F[Unit] =
+    activeTransport.get.flatMap {
+      case Some(transport) =>
+        val notification = JsonRpcResponse.Notification(
+          jsonrpc = Constants.JSONRPC_VERSION,
+          method = method,
+          params = Some(params)
+        )
+        transport.send(notification)
+      case None =>
+        Async[F].unit
+    }
 }
 
 extension (ed: ErrorData) {

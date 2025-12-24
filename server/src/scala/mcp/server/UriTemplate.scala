@@ -26,9 +26,9 @@ final case class UriTemplate private (parts: List[UriTemplate.Part]) {
     * @param vars
     *   Map of variable names to their string values
     * @return
-    *   The expanded URI string
+    *   The expanded URI as a ResourceUri
     */
-  def expand(vars: Map[String, String]): String = {
+  def expand(vars: Map[String, String]): ResourceUri = {
     val sb = new StringBuilder
     parts.foreach {
       case Literal(text) =>
@@ -39,7 +39,7 @@ final case class UriTemplate private (parts: List[UriTemplate.Part]) {
         }
         sb.append(expanded.mkString(","))
     }
-    sb.toString
+    ResourceUri(sb.toString)
   }
 
   /** Check if a URI matches this template pattern.
@@ -50,19 +50,29 @@ final case class UriTemplate private (parts: List[UriTemplate.Part]) {
     *   true if the URI matches the pattern
     */
   def matches(uri: String): Boolean =
-    extract(uri).isDefined
+    extractString(uri).isDefined
 
-  /** Extract variable values from a URI that matches this template.
+  /** Extract variable values from a ResourceUri that matches this template.
+    *
+    * @param uri
+    *   The ResourceUri to extract values from
+    * @return
+    *   Some(map) with variable bindings if the URI matches, None otherwise
+    */
+  def extract(uri: ResourceUri): Option[Map[String, String]] =
+    extractString(uri.value)
+
+  /** Extract variable values from a URI string that matches this template.
     *
     * For templates with multiple variables in a single expression (e.g., `{a,b}`), the values are split by comma. If the number of
     * comma-separated values doesn't match the number of variables, extraction fails.
     *
     * @param uri
-    *   The URI to extract values from
+    *   The URI string to extract values from
     * @return
     *   Some(map) with variable bindings if the URI matches, None otherwise
     */
-  def extract(uri: String): Option[Map[String, String]] = {
+  def extractString(uri: String): Option[Map[String, String]] = {
     // Build a regex pattern from the template
     val regexPattern = buildExtractPattern
     val regex = regexPattern.r

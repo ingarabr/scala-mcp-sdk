@@ -213,6 +213,9 @@ enum ResourceEncoding {
   *   Content encoding mode (Text or Binary)
   * @param handler
   *   Function to read the resource, receives ResourceContext for logging/roots access
+  * @param updates
+  *   Optional stream that emits when the resource content changes. Subscribed clients will receive `notifications/resources/updated`
+  *   notifications. The stream emits Unit - the library maps it to the resource URI.
   * @param outputEncoder
   *   Encoder for serializing output (for Text encoding)
   */
@@ -226,7 +229,8 @@ case class ResourceDef[F[_], Output](
     size: Option[Long] = None,
     icons: Option[List[Icon]] = None,
     encoding: ResourceEncoding = ResourceEncoding.Text,
-    handler: ResourceContext[F] => F[Output]
+    handler: ResourceContext[F] => F[Output],
+    updates: fs2.Stream[F, Unit] = fs2.Stream.empty
 )(using val outputEncoder: Encoder[Output]) {
 
   /** Convert to protocol Resource type for listing */
@@ -333,6 +337,9 @@ case class ResourceDef[F[_], Output](
   *   Optional icons for UI display
   * @param resolver
   *   Function that resolves template variables to a concrete ResourceDef
+  * @param updates
+  *   Stream that emits ResourceUri values when resources matching this template change. Subscribed clients will receive
+  *   `notifications/resources/updated` notifications.
   */
 case class ResourceTemplateDef[F[_]](
     uriTemplate: String,
@@ -342,7 +349,8 @@ case class ResourceTemplateDef[F[_]](
     mimeType: Option[String] = None,
     annotations: Option[Annotations] = None,
     icons: Option[List[Icon]] = None,
-    resolver: (Map[String, String], ResourceContext[F]) => F[Option[ResourceDef[F, ?]]]
+    resolver: (Map[String, String], ResourceContext[F]) => F[Option[ResourceDef[F, ?]]],
+    updates: fs2.Stream[F, ResourceUri] = fs2.Stream.empty
 ) {
 
   /** The parsed URI template. Parsing is done once at construction time. */
@@ -361,7 +369,7 @@ case class ResourceTemplateDef[F[_]](
     *   Some(variables) if the URI matches, None otherwise
     */
   def extract(uri: String): Option[Map[String, String]] =
-    parsedTemplate.toOption.flatMap(_.extract(uri))
+    parsedTemplate.toOption.flatMap(_.extractString(uri))
 
   /** Convert to protocol ResourceTemplate type for listing. */
   def toResourceTemplate: ResourceTemplate =

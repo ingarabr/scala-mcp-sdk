@@ -53,11 +53,14 @@ enum ConnectionState {
     *   The minimum log level for messages sent to the client. None means no filtering (send all logs).
     * @param roots
     *   The list of roots exposed by the client. None means roots haven't been fetched yet.
+    * @param subscriptions
+    *   The set of resource URIs the client is subscribed to for update notifications.
     */
   case Initialized(
       capabilities: ClientCapabilities,
       logLevel: Option[LoggingLevel] = None,
-      roots: Option[List[Root]] = None
+      roots: Option[List[Root]] = None,
+      subscriptions: Set[ResourceUri] = Set.empty
   )
 
   /** Fully operational, normal protocol communication.
@@ -73,11 +76,14 @@ enum ConnectionState {
     *   The minimum log level for messages sent to the client. None means no filtering (send all logs).
     * @param roots
     *   The list of roots exposed by the client. None means roots haven't been fetched yet.
+    * @param subscriptions
+    *   The set of resource URIs the client is subscribed to for update notifications.
     */
   case Operational(
       capabilities: ClientCapabilities,
       logLevel: Option[LoggingLevel] = None,
-      roots: Option[List[Root]] = None
+      roots: Option[List[Root]] = None,
+      subscriptions: Set[ResourceUri] = Set.empty
   )
 
   /** Connection shutting down or closed.
@@ -108,5 +114,12 @@ enum ConnectionState {
     case s: Initialized => s.roots
     case s: Operational => s.roots
     case _              => None
+  }
+
+  /** Get the subscribed resource URIs (in Initialized or Operational state) */
+  def resourceSubscriptions: Set[ResourceUri] = this match {
+    case s: Initialized => s.subscriptions
+    case s: Operational => s.subscriptions
+    case _              => Set.empty
   }
 }

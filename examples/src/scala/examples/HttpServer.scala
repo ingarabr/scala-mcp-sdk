@@ -8,15 +8,12 @@ import mcp.server.McpServer
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.server.middleware.CORS
 import examples.tools.{AddTool, EchoTool, LogAndProgressTool}
-import examples.resources.{FileTemplateResource, ServerConfigResource}
+import examples.resources.{FileTemplateResource, ServerConfigResource, TimestampResource}
 import examples.prompts.GreetingPrompt
 
 import scala.concurrent.duration.*
 
-/** HTTP server example using session-based HTTP/SSE transport.
-  *
-  * Run with: bleep run examples@HttpServer
-  */
+/** HTTP server example using session-based HTTP/SSE transport. */
 object HttpServer extends IOApp {
 
   def run(args: List[String]): IO[ExitCode] = {
@@ -24,7 +21,7 @@ object HttpServer extends IOApp {
     val serverResource = McpServer[IO](
       info = Implementation("http-mcp-server", "1.0.0"),
       tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
-      resources = List(ServerConfigResource[IO]),
+      resources = List(ServerConfigResource[IO], TimestampResource[IO]),
       resourceTemplates = List(FileTemplateResource[IO]()),
       prompts = List(GreetingPrompt[IO])
     )
