@@ -1,28 +1,30 @@
 package mcp.server
 
-import cats.effect.Sync
-import io.circe.Json
+import cats.effect.Async
+import cats.syntax.all.*
+import io.circe.{Json, JsonObject}
 import io.circe.syntax.*
-import mcp.protocol.{Constants, JsonRpcResponse, LoggingLevel, LoggingMessageNotification, ProgressNotification, ProgressToken, Root}
+import mcp.protocol.{
+  ClientCapabilities,
+  Constants,
+  ElicitAction,
+  ElicitMode,
+  ElicitRequest,
+  ElicitResponse,
+  JsonRpcResponse,
+  LoggingLevel,
+  LoggingMessageNotification,
+  ProgressNotification,
+  ProgressToken,
+  Root
+}
 
-/** Sends progress and logging notifications via the transport layer. Filters log messages based on minimum log level.
-  *
-  * @param transport
-  *   Transport to send notifications through
-  * @param token
-  *   Progress token from request metadata (if provided)
-  * @param minLogLevel
-  *   Minimum log level to send (messages below this are filtered)
-  * @param rootsList
-  *   List of roots exposed by the client (if available)
-  * @tparam F
-  *   The effect type
-  */
-class ToolContextImpl[F[_]: Sync](
+class ToolContextImpl[F[_]: Async](
     transport: Transport[F],
     token: Option[ProgressToken],
     minLogLevel: Option[LoggingLevel],
-    rootsList: Option[List[Root]]
+    rootsList: Option[List[Root]],
+    clientCapabilities: ClientCapabilities
 ) extends ToolContext[F] {
 
   def reportProgress(
@@ -46,8 +48,7 @@ class ToolContextImpl[F[_]: Sync](
         transport.send(notification)
 
       case None =>
-        // No progress token provided, silently ignore
-        Sync[F].unit
+        Async[F].unit
     }
 
   def log(
@@ -68,55 +69,79 @@ class ToolContextImpl[F[_]: Sync](
       )
       transport.send(notification)
     } else {
-      // Below minimum log level, silently ignore
-      Sync[F].unit
+      Async[F].unit
     }
 
   def progressToken: Option[ProgressToken] = token
 
   def roots: Option[List[Root]] = rootsList
 
-  /** Check if a log message should be sent based on minimum log level.
-    *
-    * Log levels (from lowest to highest severity): debug, info, notice, warning, error, critical, alert, emergency
-    */
+  def elicitationCapability: ElicitationCapability =
+    if clientCapabilities.elicitation.isDefined then ElicitationCapability.Supported
+    else ElicitationCapability.NotSupported
+
+  def elicit[T <: Tuple](message: String, fields: T): F[ElicitResult[FormFields.ExtractTypes[T]]] =
+    sendElicitRequest(ElicitRequest(ElicitMode.form, message, requestedSchema = Some(FormFields.toJsonObject(fields)))).map {
+      case ElicitResult.Accepted(json) =>
+        FormFields.extractAll(fields, json) match {
+          case Right(value) => ElicitResult.Accepted(value)
+          case Left(_)      => ElicitResult.Cancelled
+        }
+      case ElicitResult.Declined  => ElicitResult.Declined
+      case ElicitResult.Cancelled => ElicitResult.Cancelled
+    }
+
+  def elicitUrl(message: String, targetUrl: String): F[ElicitResult[Unit]] =
+    sendElicitRequest(ElicitRequest(ElicitMode.url, message, url = Some(targetUrl))).map {
+      case ElicitResult.Accepted(_) => ElicitResult.Accepted(())
+      case ElicitResult.Declined    => ElicitResult.Declined
+      case ElicitResult.Cancelled   => ElicitResult.Cancelled
+    }
+
+  private def sendElicitRequest(request: ElicitRequest): F[ElicitResult[JsonObject]] =
+    if !elicitationCapability.isSupported then Async[F].pure(ElicitResult.Cancelled)
+    else
+      transport.sendRequest("elicitation/create", Some(request.asJsonObject)).map {
+        case Left(_)        => ElicitResult.Cancelled
+        case Right(jsonObj) =>
+          Json.fromJsonObject(jsonObj).as[ElicitResponse] match {
+            case Left(_)     => ElicitResult.Cancelled
+            case Right(resp) =>
+              resp.action match {
+                case ElicitAction.accept  => ElicitResult.Accepted(resp.content.getOrElse(JsonObject.empty))
+                case ElicitAction.decline => ElicitResult.Declined
+                case ElicitAction.cancel  => ElicitResult.Cancelled
+              }
+          }
+      }
+
   private def shouldLog(level: LoggingLevel): Boolean =
     minLogLevel match {
-      case None           => true // No minimum level configured, send all logs
-      case Some(minLevel) => level.ordinal >= minLevel.ordinal // Compare log levels (higher ordinal = higher severity)
+      case None           => true
+      case Some(minLevel) => level.ordinal >= minLevel.ordinal
     }
 }
 
 object ToolContextImpl {
 
-  /** Create a ToolContext with the given configuration.
-    *
-    * @param transport
-    *   Transport to send notifications through
-    * @param progressToken
-    *   Progress token from request metadata (if provided)
-    * @param minLogLevel
-    *   Minimum log level to send (messages below this are filtered)
-    * @param roots
-    *   List of roots exposed by the client (if available)
-    */
-  def apply[F[_]: Sync](
+  def apply[F[_]: Async](
       transport: Transport[F],
       progressToken: Option[ProgressToken],
       minLogLevel: Option[LoggingLevel] = None,
-      roots: Option[List[Root]] = None
+      roots: Option[List[Root]] = None,
+      clientCapabilities: ClientCapabilities = ClientCapabilities()
   ): ToolContext[F] =
-    new ToolContextImpl[F](transport, progressToken, minLogLevel, roots)
+    new ToolContextImpl[F](transport, progressToken, minLogLevel, roots, clientCapabilities)
 
-  /** Create a no-op ToolContext that ignores all progress and logging calls.
-    *
-    * Useful for testing or when context capabilities are not needed.
-    */
-  def noop[F[_]: Sync]: ToolContext[F] =
+  def noop[F[_]: Async]: ToolContext[F] =
     new ToolContext[F] {
-      def reportProgress(progress: Double, total: Option[Double], message: Option[String]): F[Unit] = Sync[F].unit
-      def log(level: LoggingLevel, data: Json, logger: Option[String]): F[Unit] = Sync[F].unit
+      def reportProgress(progress: Double, total: Option[Double], message: Option[String]): F[Unit] = Async[F].unit
+      def log(level: LoggingLevel, data: Json, logger: Option[String]): F[Unit] = Async[F].unit
       def progressToken: Option[ProgressToken] = None
       def roots: Option[List[Root]] = None
+      def elicitationCapability: ElicitationCapability = ElicitationCapability.NotSupported
+      def elicit[T <: Tuple](message: String, fields: T): F[ElicitResult[FormFields.ExtractTypes[T]]] =
+        Async[F].pure(ElicitResult.Cancelled)
+      def elicitUrl(message: String, url: String): F[ElicitResult[Unit]] = Async[F].pure(ElicitResult.Cancelled)
     }
 }

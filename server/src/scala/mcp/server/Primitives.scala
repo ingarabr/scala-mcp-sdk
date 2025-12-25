@@ -1,6 +1,7 @@
 package mcp.server
 
 import cats.ApplicativeError
+import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
@@ -45,7 +46,7 @@ final case class ToolDef[F[_], Input, Output] private (
   /** Execute the tool with the given arguments, handling encoding/decoding internally */
   def execute(arguments: Option[JsonObject], context: Option[ToolContext[F]] = None)(using
       F: ApplicativeError[F, Throwable],
-      S: cats.effect.kernel.Sync[F]
+      A: Async[F]
   ): F[CallToolResult] = {
     val argsJson = arguments.getOrElse(JsonObject.empty).asJson
 

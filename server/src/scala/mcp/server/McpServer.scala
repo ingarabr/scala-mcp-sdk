@@ -421,9 +421,8 @@ private class McpServerImpl[F[_]: Async](
       .flatMap(_("progressToken"))
       .flatMap(_.as[ProgressToken].toOption)
 
-    // Get minimum log level and roots from connection state
     connectionState.get.flatMap { state =>
-      val context = ToolContextImpl[F](transport, progressToken, state.minLogLevel, state.rootsList)
+      val context = ToolContextImpl[F](transport, progressToken, state.minLogLevel, state.rootsList, capabilities)
 
       paramsJson.as[CallToolRequest] match {
         case Right(request) =>

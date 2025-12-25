@@ -375,6 +375,32 @@ case class CompletionCompletion(
 ) derives Codec.AsObject
 
 // ============================================================================
+// ELICITATION
+// ============================================================================
+
+enum ElicitMode derives EnumCodec {
+  case form, url
+}
+
+/** A request from the server to elicit information from the user via the client. */
+case class ElicitRequest(
+    mode: ElicitMode,
+    message: String,
+    requestedSchema: Option[JsonObject] = None,
+    url: Option[String] = None
+) derives Codec.AsObject
+
+enum ElicitAction derives EnumCodec {
+  case accept, decline, cancel
+}
+
+case class ElicitResponse(
+    action: ElicitAction,
+    content: Option[JsonObject] = None,
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject
+
+// ============================================================================
 // NOTIFICATIONS
 // ============================================================================
 
