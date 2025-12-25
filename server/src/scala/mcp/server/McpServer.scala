@@ -1,6 +1,6 @@
 package mcp.server
 
-import cats.effect.{Async, Ref, Resource as CatsResource}
+import cats.effect.{Async, Fiber, Ref, Resource as CatsResource}
 import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
@@ -118,6 +118,7 @@ object McpServer {
       for {
         connectionState <- Ref.of[F, ConnectionState](ConnectionState.Uninitialized)
         activeTransport <- Ref.of[F, Option[Transport[F]]](None)
+        inFlightRequests <- Ref.of[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]](Map.empty)
       } yield new McpServerImpl[F](
         serverInfo = info,
         toolsMap = tools.map(t => t.name -> t).toMap,
@@ -126,7 +127,8 @@ object McpServer {
         promptsMap = prompts.map(p => p.name -> p).toMap,
         completionProviders = completions,
         connectionState = connectionState,
-        activeTransport = activeTransport
+        activeTransport = activeTransport,
+        inFlightRequests = inFlightRequests
       )
     }
 }
@@ -146,7 +148,8 @@ private class McpServerImpl[F[_]: Async](
     promptsMap: Map[String, PromptDef[F, _]],
     completionProviders: List[CompletionDef[F]],
     connectionState: Ref[F, ConnectionState],
-    activeTransport: Ref[F, Option[Transport[F]]]
+    activeTransport: Ref[F, Option[Transport[F]]],
+    inFlightRequests: Ref[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]]
 ) extends McpServer[F] {
 
   /** Merged stream of all resource updates from resources and templates. */
@@ -196,32 +199,47 @@ private class McpServerImpl[F[_]: Async](
   private def handleMessage(message: JsonRpcRequest, transport: Transport[F]): F[Option[JsonRpcResponse]] =
     message match {
       case JsonRpcRequest.Request(jsonrpc, id, method, params) =>
-        handleRequest(method, params, transport)
-          .map {
-            case Right(result) =>
-              Some(JsonRpcResponse.Response(jsonrpc, id, result))
-            case Left(errorData) =>
-              Some(JsonRpcResponse.Error(jsonrpc, Some(id), errorData))
-          }
-          .handleError { error =>
-            // Catch-all for unexpected exceptions
-            Some(
-              JsonRpcResponse.Error(
-                jsonrpc,
-                Some(id),
-                ErrorData(
-                  code = Constants.INTERNAL_ERROR,
-                  message = error.getMessage,
-                  data = None
+        trackRequest(id) {
+          handleRequest(method, params, transport)
+            .map {
+              case Right(result) =>
+                Some(JsonRpcResponse.Response(jsonrpc, id, result))
+              case Left(errorData) =>
+                Some(JsonRpcResponse.Error(jsonrpc, Some(id), errorData))
+            }
+            .handleError { error =>
+              // Catch-all for unexpected exceptions
+              Some(
+                JsonRpcResponse.Error(
+                  jsonrpc,
+                  Some(id),
+                  ErrorData(
+                    code = Constants.INTERNAL_ERROR,
+                    message = error.getMessage,
+                    data = None
+                  )
                 )
               )
-            )
-          }
+            }
+        }
 
       case JsonRpcRequest.Notification(_, method, params) =>
         // Notifications don't get responses per JSON-RPC 2.0 spec
-        handleNotification(method, transport).as(None)
+        handleNotification(method, params, transport).as(None)
     }
+
+  /** Execute a request with fiber tracking for cancellation support.
+    *
+    * Registers the fiber in the in-flight map before starting, and ensures cleanup happens regardless of how the fiber completes (success,
+    * error, or cancellation).
+    */
+  private def trackRequest(requestId: RequestId)(handler: F[Option[JsonRpcResponse]]): F[Option[JsonRpcResponse]] =
+    for {
+      fiber <- Async[F].start(handler)
+      result <- Async[F].bracketCase(inFlightRequests.update(_ + (requestId -> fiber)))(_ => fiber.joinWithNever)((_, _) =>
+        inFlightRequests.update(_ - requestId)
+      )
+    } yield result
 
   /** Extract capabilities from connection state and pass to handler.
     *
@@ -323,7 +341,7 @@ private class McpServerImpl[F[_]: Async](
     }
 
   /** Handle notifications (fire and forget) */
-  private def handleNotification(method: String, transport: Transport[F]): F[Unit] =
+  private def handleNotification(method: String, params: Option[JsonObject], transport: Transport[F]): F[Unit] =
     method match {
       case "notifications/initialized" =>
         // Transition from Initialized to Operational state, then fetch roots if client supports them
@@ -337,8 +355,7 @@ private class McpServerImpl[F[_]: Async](
         }
 
       case "notifications/cancelled" =>
-        // TODO: Handle cancellation
-        Async[F].unit
+        handleCancelled(params)
 
       case "notifications/roots/list_changed" =>
         // Client notified us that roots changed - fetch fresh roots
@@ -348,6 +365,21 @@ private class McpServerImpl[F[_]: Async](
         // Unknown notification, ignore
         Async[F].unit
     }
+
+  /** Handle a cancellation notification by cancelling the in-flight request fiber.
+    *
+    * Cancellation is best-effort: if the request has already completed or doesn't exist, this is a no-op.
+    */
+  private def handleCancelled(params: Option[JsonObject]): F[Unit] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[CancelledNotification] match {
+      case Right(notification) =>
+        inFlightRequests.get.flatMap(_.get(notification.requestId).fold(Async[F].unit)(_.cancel))
+      case Left(_) =>
+        // Malformed notification - ignore (notifications don't get error responses)
+        Async[F].unit
+    }
+  }
 
   // Request handlers
 
