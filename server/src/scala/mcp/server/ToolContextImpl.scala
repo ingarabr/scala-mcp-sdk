@@ -7,6 +7,8 @@ import io.circe.syntax.*
 import mcp.protocol.{
   ClientCapabilities,
   Constants,
+  CreateMessageRequest,
+  CreateMessageResult,
   ElicitAction,
   ElicitMode,
   ElicitRequest,
@@ -14,9 +16,11 @@ import mcp.protocol.{
   JsonRpcResponse,
   LoggingLevel,
   LoggingMessageNotification,
+  ModelPreferences,
   ProgressNotification,
   ProgressToken,
-  Root
+  Root,
+  SamplingMessage
 }
 
 class ToolContextImpl[F[_]: Async](
@@ -115,6 +119,42 @@ class ToolContextImpl[F[_]: Async](
           }
       }
 
+  def samplingCapability: SamplingCapability =
+    if clientCapabilities.sampling.isDefined then SamplingCapability.Supported
+    else SamplingCapability.NotSupported
+
+  def sample(
+      messages: List[SamplingMessage],
+      maxTokens: Int,
+      systemPrompt: Option[String] = None,
+      modelPreferences: Option[ModelPreferences] = None,
+      temperature: Option[Double] = None,
+      stopSequences: Option[List[String]] = None,
+      includeContext: Option[String] = None,
+      metadata: Option[JsonObject] = None
+  ): F[SampleResult[CreateMessageResult]] =
+    if !samplingCapability.isSupported then Async[F].pure(SampleResult.NotSupported)
+    else {
+      val request = CreateMessageRequest(
+        messages = messages,
+        maxTokens = maxTokens,
+        systemPrompt = systemPrompt,
+        modelPreferences = modelPreferences,
+        temperature = temperature,
+        stopSequences = stopSequences,
+        includeContext = includeContext,
+        metadata = metadata
+      )
+      transport.sendRequest("sampling/createMessage", Some(request.asJsonObject)).map {
+        case Left(error)    => SampleResult.Failed(error.message)
+        case Right(jsonObj) =>
+          Json.fromJsonObject(jsonObj).as[CreateMessageResult] match {
+            case Left(decodeError) => SampleResult.Failed(s"Failed to decode response: ${decodeError.getMessage}")
+            case Right(result)     => SampleResult.Success(result)
+          }
+      }
+    }
+
   private def shouldLog(level: LoggingLevel): Boolean =
     minLogLevel match {
       case None           => true
@@ -143,5 +183,17 @@ object ToolContextImpl {
       def elicit[T <: Tuple](message: String, fields: T): F[ElicitResult[FormFields.ExtractTypes[T]]] =
         Async[F].pure(ElicitResult.Cancelled)
       def elicitUrl(message: String, url: String): F[ElicitResult[Unit]] = Async[F].pure(ElicitResult.Cancelled)
+      def samplingCapability: SamplingCapability = SamplingCapability.NotSupported
+      def sample(
+          messages: List[SamplingMessage],
+          maxTokens: Int,
+          systemPrompt: Option[String],
+          modelPreferences: Option[ModelPreferences],
+          temperature: Option[Double],
+          stopSequences: Option[List[String]],
+          includeContext: Option[String],
+          metadata: Option[JsonObject]
+      ): F[SampleResult[CreateMessageResult]] =
+        Async[F].pure(SampleResult.NotSupported)
     }
 }
