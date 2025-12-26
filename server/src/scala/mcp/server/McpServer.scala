@@ -105,6 +105,8 @@ object McpServer {
     *   List of prompt definitions (existential types)
     * @param completions
     *   List of completion providers for prompts and resource templates
+    * @param paginationConfig
+    *   Configuration for list pagination (page size)
     * @param tasksEnabled
     *   Whether to enable async task support for incoming requests (tools/call with task param)
     * @param taskConfig
@@ -122,6 +124,7 @@ object McpServer {
       resourceTemplates: List[ResourceTemplateDef[F]] = Nil,
       prompts: List[PromptDef[F, _]] = Nil,
       completions: List[CompletionDef[F]] = Nil,
+      paginationConfig: PaginationConfig = PaginationConfig.Default,
       tasksEnabled: Boolean = false,
       taskConfig: TaskConfig = TaskConfig(),
       useTasksForOutgoingRequests: Boolean = false
@@ -139,6 +142,7 @@ object McpServer {
         resourceTemplates = resourceTemplates,
         promptsMap = prompts.map(p => p.name -> p).toMap,
         completionProviders = completions,
+        paginationConfig = paginationConfig,
         connectionState = connectionState,
         activeTransport = activeTransport,
         inFlightRequests = inFlightRequests,
@@ -162,6 +166,7 @@ private class McpServerImpl[F[_]: Async](
     resourceTemplates: List[ResourceTemplateDef[F]],
     promptsMap: Map[String, PromptDef[F, _]],
     completionProviders: List[CompletionDef[F]],
+    paginationConfig: PaginationConfig,
     connectionState: Ref[F, ConnectionState],
     activeTransport: Ref[F, Option[Transport[F]]],
     inFlightRequests: Ref[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]],
@@ -291,16 +296,16 @@ private class McpServerImpl[F[_]: Async](
         handlePing()
 
       case "tools/list" =>
-        withCapabilities(_ => handleListTools())
+        withCapabilities(_ => handleListTools(params))
 
       case "tools/call" =>
         withCapabilities(caps => handleCallTool(params, transport, caps))
 
       case "resources/list" =>
-        withCapabilities(_ => handleListResources())
+        withCapabilities(_ => handleListResources(params))
 
       case "resources/templates/list" =>
-        withCapabilities(_ => handleListResourceTemplates())
+        withCapabilities(_ => handleListResourceTemplates(params))
 
       case "resources/read" =>
         withCapabilities(caps => handleReadResource(params, transport, caps))
@@ -312,7 +317,7 @@ private class McpServerImpl[F[_]: Async](
         withCapabilities(_ => handleUnsubscribe(params))
 
       case "prompts/list" =>
-        withCapabilities(_ => handleListPrompts())
+        withCapabilities(_ => handleListPrompts(params))
 
       case "prompts/get" =>
         withCapabilities(caps => handleGetPrompt(params, caps))
@@ -324,7 +329,7 @@ private class McpServerImpl[F[_]: Async](
         withCapabilities(_ => handleComplete(params))
 
       case "tasks/list" =>
-        withCapabilities(_ => handleListTasks())
+        withCapabilities(_ => handleListTasks(params))
 
       case "tasks/get" =>
         withCapabilities(_ => handleGetTask(params))
@@ -470,10 +475,19 @@ private class McpServerImpl[F[_]: Async](
     }
   }
 
-  private def handleListTools(): F[Either[ErrorData, JsonObject]] = {
-    val result = ListToolsResult(tools = toolsMap.values.map(_.toTool).toList)
-    Async[F].pure(Right(result.asJsonObject))
+  private def handleListTools(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+    val allTools = toolsList
+    Paginator.paginate(allTools, cursor, paginationConfig, _.name) match {
+      case Left(error)      => Async[F].pure(Left(error))
+      case Right(paginated) =>
+        val result = ListToolsResult(tools = paginated.items, nextCursor = paginated.nextCursor)
+        Async[F].pure(Right(result.asJsonObject))
+    }
   }
+
+  // Pre-computed list for stable pagination hash
+  private lazy val toolsList: List[Tool] = toolsMap.values.map(_.toTool).toList
 
   private def handleCallTool(
       params: Option[JsonObject],
@@ -541,15 +555,33 @@ private class McpServerImpl[F[_]: Async](
       _ <- registry.registerFiber(task.taskId, fiber)
     } yield Right(CreateTaskResult(task = task).asJsonObject)
 
-  private def handleListResources(): F[Either[ErrorData, JsonObject]] = {
-    val result = ListResourcesResult(resources = resourcesMap.values.map(_.toResource).toList)
-    Async[F].pure(Right(result.asJsonObject))
+  private def handleListResources(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+    val allResources = resourcesList
+    Paginator.paginate(allResources, cursor, paginationConfig, _.uri) match {
+      case Left(error)      => Async[F].pure(Left(error))
+      case Right(paginated) =>
+        val result = ListResourcesResult(resources = paginated.items, nextCursor = paginated.nextCursor)
+        Async[F].pure(Right(result.asJsonObject))
+    }
   }
 
-  private def handleListResourceTemplates(): F[Either[ErrorData, JsonObject]] = {
-    val result = ListResourceTemplatesResult(resourceTemplates = resourceTemplates.map(_.toResourceTemplate))
-    Async[F].pure(Right(result.asJsonObject))
+  // Pre-computed list for stable pagination hash
+  private lazy val resourcesList: List[Resource] = resourcesMap.values.map(_.toResource).toList
+
+  private def handleListResourceTemplates(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+    val allTemplates = resourceTemplatesList
+    Paginator.paginate(allTemplates, cursor, paginationConfig, _.uriTemplate) match {
+      case Left(error)      => Async[F].pure(Left(error))
+      case Right(paginated) =>
+        val result = ListResourceTemplatesResult(resourceTemplates = paginated.items, nextCursor = paginated.nextCursor)
+        Async[F].pure(Right(result.asJsonObject))
+    }
   }
+
+  // Pre-computed list for stable pagination hash
+  private lazy val resourceTemplatesList: List[ResourceTemplate] = resourceTemplates.map(_.toResourceTemplate)
 
   private def handleReadResource(
       params: Option[JsonObject],
@@ -692,10 +724,19 @@ private class McpServerImpl[F[_]: Async](
       case other => other
     }
 
-  private def handleListPrompts(): F[Either[ErrorData, JsonObject]] = {
-    val result = ListPromptsResult(prompts = promptsMap.values.map(_.toPrompt).toList)
-    Async[F].pure(Right(result.asJsonObject))
+  private def handleListPrompts(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+    val allPrompts = promptsList
+    Paginator.paginate(allPrompts, cursor, paginationConfig, _.name) match {
+      case Left(error)      => Async[F].pure(Left(error))
+      case Right(paginated) =>
+        val result = ListPromptsResult(prompts = paginated.items, nextCursor = paginated.nextCursor)
+        Async[F].pure(Right(result.asJsonObject))
+    }
   }
+
+  // Pre-computed list for stable pagination hash
+  private lazy val promptsList: List[Prompt] = promptsMap.values.map(_.toPrompt).toList
 
   private def handleGetPrompt(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
@@ -752,10 +793,17 @@ private class McpServerImpl[F[_]: Async](
   // TASK HANDLERS
   // ============================================================================
 
-  private def handleListTasks(): F[Either[ErrorData, JsonObject]] =
+  private def handleListTasks(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] =
     taskRegistry match {
       case Some(registry) =>
-        registry.list().map(tasks => Right(ListTasksResult(tasks = tasks).asJsonObject))
+        registry.list().map { allTasks =>
+          val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+          Paginator.paginate(allTasks, cursor, paginationConfig, _.taskId) match {
+            case Left(error)      => Left(error)
+            case Right(paginated) =>
+              Right(ListTasksResult(tasks = paginated.items, nextCursor = paginated.nextCursor).asJsonObject)
+          }
+        }
       case None =>
         ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
     }
