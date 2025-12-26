@@ -6,6 +6,8 @@ import io.circe.*
 import io.circe.syntax.*
 import mcp.protocol.*
 
+import scala.concurrent.duration.*
+
 /** MCP server configuration with primitives defined as data structures.
   *
   * This is the main interface for building MCP servers. Define your tools, resources, and prompts as data structures and pass them to the
@@ -103,6 +105,13 @@ object McpServer {
     *   List of prompt definitions (existential types)
     * @param completions
     *   List of completion providers for prompts and resource templates
+    * @param tasksEnabled
+    *   Whether to enable async task support for incoming requests (tools/call with task param)
+    * @param taskConfig
+    *   Configuration for task TTL and polling behavior (only used when tasksEnabled=true)
+    * @param useTasksForOutgoingRequests
+    *   Whether to use task augmentation for outgoing requests (sampling/elicitation). When enabled, the server will add task params to
+    *   outgoing requests if the client supports tasks, and poll for completion. Requires tasksEnabled=true.
     * @return
     *   Resource managing the server lifecycle
     */
@@ -112,13 +121,17 @@ object McpServer {
       resources: List[ResourceDef[F, _]] = Nil,
       resourceTemplates: List[ResourceTemplateDef[F]] = Nil,
       prompts: List[PromptDef[F, _]] = Nil,
-      completions: List[CompletionDef[F]] = Nil
+      completions: List[CompletionDef[F]] = Nil,
+      tasksEnabled: Boolean = false,
+      taskConfig: TaskConfig = TaskConfig(),
+      useTasksForOutgoingRequests: Boolean = false
   ): CatsResource[F, McpServer[F]] =
     CatsResource.eval {
       for {
         connectionState <- Ref.of[F, ConnectionState](ConnectionState.Uninitialized)
         activeTransport <- Ref.of[F, Option[Transport[F]]](None)
         inFlightRequests <- Ref.of[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]](Map.empty)
+        taskRegistry <- if tasksEnabled then TaskRegistry[F](taskConfig).map(Some(_)) else Async[F].pure(None)
       } yield new McpServerImpl[F](
         serverInfo = info,
         toolsMap = tools.map(t => t.name -> t).toMap,
@@ -128,7 +141,9 @@ object McpServer {
         completionProviders = completions,
         connectionState = connectionState,
         activeTransport = activeTransport,
-        inFlightRequests = inFlightRequests
+        inFlightRequests = inFlightRequests,
+        taskRegistry = taskRegistry,
+        useTasksForOutgoing = useTasksForOutgoingRequests && tasksEnabled
       )
     }
 }
@@ -149,7 +164,9 @@ private class McpServerImpl[F[_]: Async](
     completionProviders: List[CompletionDef[F]],
     connectionState: Ref[F, ConnectionState],
     activeTransport: Ref[F, Option[Transport[F]]],
-    inFlightRequests: Ref[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]]
+    inFlightRequests: Ref[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]],
+    taskRegistry: Option[TaskRegistry[F]],
+    useTasksForOutgoing: Boolean
 ) extends McpServer[F] {
 
   /** Merged stream of all resource updates from resources and templates. */
@@ -173,7 +190,14 @@ private class McpServerImpl[F[_]: Async](
       tools = if toolsMap.nonEmpty then Some(ToolsCapability(listChanged = Some(true))) else None,
       resources = if hasResources then Some(ResourcesCapability(subscribe = Some(true), listChanged = Some(true))) else None,
       prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(true))) else None,
-      completions = if completionProviders.nonEmpty then Some(JsonObject.empty) else None
+      completions = if completionProviders.nonEmpty then Some(JsonObject.empty) else None,
+      tasks = taskRegistry.map(_ =>
+        TasksCapability(
+          list = Some(JsonObject.empty),
+          cancel = Some(JsonObject.empty),
+          requests = Some(ServerTasksRequests(tools = Some(ServerTasksTools(call = Some(JsonObject.empty)))))
+        )
+      )
     )
   }
 
@@ -298,6 +322,18 @@ private class McpServerImpl[F[_]: Async](
 
       case "completion/complete" =>
         withCapabilities(_ => handleComplete(params))
+
+      case "tasks/list" =>
+        withCapabilities(_ => handleListTasks())
+
+      case "tasks/get" =>
+        withCapabilities(_ => handleGetTask(params))
+
+      case "tasks/cancel" =>
+        withCapabilities(_ => handleCancelTask(params))
+
+      case "tasks/result" =>
+        withCapabilities(_ => handleGetTaskResult(params))
 
       case _ =>
         ErrorData(code = Constants.METHOD_NOT_FOUND, message = s"Method not found: $method").asError
@@ -453,14 +489,25 @@ private class McpServerImpl[F[_]: Async](
       .flatMap(_("progressToken"))
       .flatMap(_.as[ProgressToken].toOption)
 
+    // Extract task param for task-augmented requests
+    val taskParamOpt: Option[TaskParam] = paramsObj("task")
+      .flatMap(_.as[TaskParam].toOption)
+
     connectionState.get.flatMap { state =>
-      val context = ToolContextImpl[F](transport, progressToken, state.minLogLevel, state.rootsList, capabilities)
+      val context = ToolContextImpl[F](transport, progressToken, state.minLogLevel, state.rootsList, capabilities, useTasksForOutgoing)
 
       paramsJson.as[CallToolRequest] match {
         case Right(request) =>
           toolsMap.get(request.name) match {
             case Some(toolDef) =>
-              toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
+              (taskParamOpt, taskRegistry) match {
+                case (Some(taskParam), Some(registry)) =>
+                  handleCallToolAsTask(request, toolDef, context, registry, taskParam)
+                case (Some(_), None) =>
+                  ErrorData(code = Constants.INVALID_PARAMS, message = "Tasks not enabled on this server").asError
+                case _ =>
+                  toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
+              }
             case None =>
               ErrorData(code = Constants.INVALID_PARAMS, message = s"Tool not found: ${request.name}").asError
           }
@@ -470,6 +517,29 @@ private class McpServerImpl[F[_]: Async](
       }
     }
   }
+
+  private def handleCallToolAsTask(
+      request: CallToolRequest,
+      toolDef: ToolDef[F, ?, ?],
+      context: ToolContext[F],
+      registry: TaskRegistry[F],
+      taskParam: TaskParam
+  ): F[Either[ErrorData, JsonObject]] =
+    for {
+      task <- registry.create(taskParam.ttl.map(_.millis))
+      fiber <- Async[F].start {
+        toolDef
+          .execute(request.arguments, Some(context))
+          .flatMap { result =>
+            registry.storeResult(task.taskId, result.asJson) *>
+              registry.updateStatus(task.taskId, TaskStatus.completed)
+          }
+          .handleErrorWith { error =>
+            registry.updateStatus(task.taskId, TaskStatus.failed, Some(error.getMessage))
+          }
+      }
+      _ <- registry.registerFiber(task.taskId, fiber)
+    } yield Right(CreateTaskResult(task = task).asJsonObject)
 
   private def handleListResources(): F[Either[ErrorData, JsonObject]] = {
     val result = ListResourcesResult(resources = resourcesMap.values.map(_.toResource).toList)
@@ -677,6 +747,86 @@ private class McpServerImpl[F[_]: Async](
           false
       }
     }
+
+  // ============================================================================
+  // TASK HANDLERS
+  // ============================================================================
+
+  private def handleListTasks(): F[Either[ErrorData, JsonObject]] =
+    taskRegistry match {
+      case Some(registry) =>
+        registry.list().map(tasks => Right(ListTasksResult(tasks = tasks).asJsonObject))
+      case None =>
+        ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+    }
+
+  private def handleGetTask(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[GetTaskRequest] match {
+      case Right(request) =>
+        taskRegistry match {
+          case Some(registry) =>
+            registry.get(request.taskId).map {
+              case Some(task) => Right(GetTaskResult(task = task).asJsonObject)
+              case None       => Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Task not found: ${request.taskId}"))
+            }
+          case None =>
+            ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+        }
+      case Left(error) =>
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid request: ${error.getMessage}").asError
+    }
+  }
+
+  private def handleCancelTask(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[CancelTaskRequest] match {
+      case Right(request) =>
+        taskRegistry match {
+          case Some(registry) =>
+            registry.cancel(request.taskId).map {
+              case Some(task) => Right(CancelTaskResult(task = task).asJsonObject)
+              case None       =>
+                Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Cannot cancel task: ${request.taskId}"))
+            }
+          case None =>
+            ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+        }
+      case Left(error) =>
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid request: ${error.getMessage}").asError
+    }
+  }
+
+  private def handleGetTaskResult(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
+    val paramsJson = params.getOrElse(JsonObject.empty).asJson
+    paramsJson.as[GetTaskResultRequest] match {
+      case Right(request) =>
+        taskRegistry match {
+          case Some(registry) =>
+            for {
+              taskOpt <- registry.get(request.taskId)
+              resultOpt <- registry.getResult(request.taskId)
+            } yield (taskOpt, resultOpt) match {
+              case (Some(task), Some(result)) if task.status == TaskStatus.completed =>
+                val metaWithTask = JsonObject(
+                  "io.modelcontextprotocol/related-task" -> Json.obj("taskId" -> request.taskId.asJson)
+                )
+                result.asObject match {
+                  case Some(obj) => Right(obj.add("_meta", metaWithTask.asJson))
+                  case None      => Right(JsonObject("result" -> result, "_meta" -> metaWithTask.asJson))
+                }
+              case (Some(task), _) if task.status != TaskStatus.completed =>
+                Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Task not completed: ${task.status}"))
+              case _ =>
+                Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Task not found: ${request.taskId}"))
+            }
+          case None =>
+            ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+        }
+      case Left(error) =>
+        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid request: ${error.getMessage}").asError
+    }
+  }
 
   // ============================================================================
   // NOTIFICATION API

@@ -401,6 +401,89 @@ case class ElicitResponse(
 ) derives Codec.AsObject
 
 // ============================================================================
+// TASKS
+// ============================================================================
+
+/** An async task that tracks a long-running operation.
+  */
+case class Task(
+    /** Unique identifier for this task. */
+    taskId: String,
+    /** Current status of the task. */
+    status: TaskStatus,
+    /** Human-readable status message. */
+    statusMessage: Option[String] = None,
+    /** ISO 8601 timestamp when the task was created. */
+    createdAt: String,
+    /** ISO 8601 timestamp when the task was last updated. */
+    lastUpdatedAt: String,
+    /** Time-to-live in milliseconds. */
+    ttl: Option[Long] = None,
+    /** Suggested polling interval in milliseconds. */
+    pollInterval: Option[Long] = None,
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject
+
+/** Task parameters for augmented requests. */
+case class TaskParam(
+    /** Time-to-live for the task in milliseconds. */
+    ttl: Option[Long] = None
+) derives Codec.AsObject
+
+/** Sent from the client to request a list of active tasks.
+  */
+case class ListTasksRequest(
+    cursor: Option[Cursor] = None
+) derives Codec.AsObject
+
+/** The server's response to a tasks/list request.
+  */
+case class ListTasksResult(
+    tasks: List[Task],
+    nextCursor: Option[Cursor] = None,
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject
+
+/** Sent from the client to get the status of a specific task.
+  */
+case class GetTaskRequest(
+    taskId: String
+) derives Codec.AsObject
+
+/** The server's response to a tasks/get request.
+  */
+case class GetTaskResult(
+    task: Task,
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject
+
+/** Sent from the client to cancel a running task.
+  */
+case class CancelTaskRequest(
+    taskId: String
+) derives Codec.AsObject
+
+/** The server's response to a tasks/cancel request.
+  */
+case class CancelTaskResult(
+    task: Task,
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject
+
+/** Sent from the client to retrieve the result of a completed task.
+  */
+case class GetTaskResultRequest(
+    taskId: String
+) derives Codec.AsObject
+
+/** Returned when a request is task-augmented, containing the newly created task.
+  */
+case class CreateTaskResult(
+    task: Task,
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject
+
+// ============================================================================
 // NOTIFICATIONS
 // ============================================================================
 

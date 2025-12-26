@@ -41,6 +41,21 @@ object SamplingCapability {
   case object Supported extends SamplingCapability
 }
 
+sealed trait TasksCapability {
+  def fold[A](notSupported: => A, supported: => A): A =
+    this match {
+      case TasksCapability.NotSupported => notSupported
+      case TasksCapability.Supported    => supported
+    }
+
+  def isSupported: Boolean = fold(notSupported = false, supported = true)
+}
+
+object TasksCapability {
+  case object NotSupported extends TasksCapability
+  case object Supported extends TasksCapability
+}
+
 sealed trait SampleResult[+A]
 
 object SampleResult {
@@ -186,6 +201,9 @@ trait ToolContext[F[_]] {
 
   /** Sampling capability of the client. */
   def samplingCapability: SamplingCapability
+
+  /** Tasks capability of the client. */
+  def tasksCapability: TasksCapability
 
   /** Request an LLM completion from the client.
     *

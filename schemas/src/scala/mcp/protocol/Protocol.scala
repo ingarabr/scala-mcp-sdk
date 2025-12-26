@@ -18,6 +18,11 @@ enum IconTheme derives EnumCodec {
   case dark, light
 }
 
+/** Status of an async task. */
+enum TaskStatus derives EnumCodec {
+  case working, completed, failed, cancelled, input_required
+}
+
 /** An optionally-sized icon that can be displayed in a user interface. */
 case class Icon(
     /** A standard URI pointing to an icon resource. */
