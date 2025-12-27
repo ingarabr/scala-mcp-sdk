@@ -1,6 +1,7 @@
 package mcp.protocol
 
 import io.circe.*
+import io.circe.syntax.*
 import io.circe.generic.semiauto.*
 import io.circe.derivation.Configuration
 
@@ -211,11 +212,38 @@ case class LoggingMessageNotification(
 // ============================================================================
 
 /** A message for sampling from an LLM.
+  *
+  * The content field can be a single content block or an array of content blocks. When encoding, a single-element list is encoded as a
+  * single object; when decoding, both single objects and arrays are accepted.
   */
 case class SamplingMessage(
     role: Role,
-    content: Content
-) derives Codec.AsObject
+    content: List[Content],
+    _meta: Option[JsonObject] = None
+)
+
+object SamplingMessage {
+  given Codec.AsObject[SamplingMessage] = new Codec.AsObject[SamplingMessage] {
+    def apply(c: HCursor): Decoder.Result[SamplingMessage] =
+      for {
+        role <- c.get[Role]("role")
+        meta <- c.get[Option[JsonObject]]("_meta")
+        content <- c.get[List[Content]]("content").orElse(c.get[Content]("content").map(List(_)))
+      } yield SamplingMessage(role, content, meta)
+
+    def encodeObject(a: SamplingMessage): JsonObject = {
+      val contentJson = a.content match {
+        case single :: Nil => single.asJson
+        case multiple      => multiple.asJson
+      }
+      JsonObject(
+        "role" -> a.role.asJson,
+        "content" -> contentJson,
+        "_meta" -> a._meta.asJson
+      )
+    }
+  }
+}
 
 /** Model preferences for sampling operations.
   */
@@ -254,22 +282,59 @@ case class CreateMessageRequest(
     /** Optional metadata for model selection. */
     metadata: Option[JsonObject] = None,
     /** Preferences for which model to use. */
-    modelPreferences: Option[ModelPreferences] = None
+    modelPreferences: Option[ModelPreferences] = None,
+    /** Tools that the model may use during generation. The client MUST return an error if this field is provided but
+      * ClientCapabilities.sampling.tools is not declared.
+      */
+    tools: Option[List[Tool]] = None,
+    /** Controls how the model uses tools. The client MUST return an error if this field is provided but ClientCapabilities.sampling.tools
+      * is not declared. Default is `{ mode: "auto" }`.
+      */
+    toolChoice: Option[ToolChoice] = None
 ) derives Codec.AsObject
 
 /** The client's response to a sampling/createMessage request.
+  *
+  * The content field can be a single content block or an array of content blocks.
   */
 case class CreateMessageResult(
     /** The role of the message sender. */
     role: Role,
     /** The content of the response. */
-    content: Content,
+    content: List[Content],
     /** The name of the model that generated this response. */
     model: String,
     /** The reason why sampling stopped. */
-    stopReason: Option[String] = None, // "endTurn" | "stopSequence" | "maxTokens" | custom
+    stopReason: Option[String] = None, // "endTurn" | "stopSequence" | "maxTokens" | "toolUse" | custom
     _meta: Option[JsonObject] = None
-) derives Codec.AsObject
+)
+
+object CreateMessageResult {
+  given Codec.AsObject[CreateMessageResult] = new Codec.AsObject[CreateMessageResult] {
+    def apply(c: HCursor): Decoder.Result[CreateMessageResult] =
+      for {
+        role <- c.get[Role]("role")
+        content <- c.get[List[Content]]("content").orElse(c.get[Content]("content").map(List(_)))
+        model <- c.get[String]("model")
+        stopReason <- c.get[Option[String]]("stopReason")
+        meta <- c.get[Option[JsonObject]]("_meta")
+      } yield CreateMessageResult(role, content, model, stopReason, meta)
+
+    def encodeObject(a: CreateMessageResult): JsonObject = {
+      val contentJson = a.content match {
+        case single :: Nil => single.asJson
+        case multiple      => multiple.asJson
+      }
+      JsonObject(
+        "role" -> a.role.asJson,
+        "content" -> contentJson,
+        "model" -> a.model.asJson,
+        "stopReason" -> a.stopReason.asJson,
+        "_meta" -> a._meta.asJson
+      )
+    }
+  }
+}
 
 // ============================================================================
 // ROOTS
@@ -382,11 +447,146 @@ enum ElicitMode derives EnumCodec {
   case form, url
 }
 
-/** A request from the server to elicit information from the user via the client. */
+/** Format options for string fields in elicitation forms. */
+enum StringFormat derives EnumCodec {
+  case email, uri, date, `date-time`
+}
+
+/** Primitive schema definitions for elicitation form fields.
+  *
+  * Only top-level properties are allowed, without nesting.
+  */
+enum FormFieldSchema {
+
+  /** String field schema.
+    *
+    * JSON type: "string" (without enum/oneOf)
+    */
+  case StringField(
+      title: Option[String] = None,
+      description: Option[String] = None,
+      minLength: Option[Int] = None,
+      maxLength: Option[Int] = None,
+      format: Option[StringFormat] = None,
+      default: Option[String] = None
+  )
+
+  /** Number field schema.
+    *
+    * JSON type: "number" or "integer"
+    */
+  case NumberField(
+      title: Option[String] = None,
+      description: Option[String] = None,
+      minimum: Option[Double] = None,
+      maximum: Option[Double] = None,
+      default: Option[Double] = None,
+      integer: Boolean = false
+  )
+
+  /** Boolean field schema.
+    *
+    * JSON type: "boolean"
+    */
+  case BooleanField(
+      title: Option[String] = None,
+      description: Option[String] = None,
+      default: Option[Boolean] = None
+  )
+
+  /** Single-select enum field schema (simple values).
+    *
+    * JSON type: "string" with enum array
+    */
+  case EnumField(
+      title: Option[String] = None,
+      description: Option[String] = None,
+      values: List[String],
+      default: Option[String] = None
+  )
+
+  /** Single-select enum field schema with titled options.
+    *
+    * JSON type: "string" with oneOf array
+    */
+  case TitledEnumField(
+      title: Option[String] = None,
+      description: Option[String] = None,
+      options: List[EnumOption],
+      default: Option[String] = None
+  )
+
+  /** Multi-select enum field schema (simple values).
+    *
+    * JSON type: "array" with items.enum
+    */
+  case MultiEnumField(
+      title: Option[String] = None,
+      description: Option[String] = None,
+      values: List[String],
+      default: Option[List[String]] = None
+  )
+
+  /** Multi-select enum field schema with titled options.
+    *
+    * JSON type: "array" with items.oneOf
+    */
+  case TitledMultiEnumField(
+      title: Option[String] = None,
+      description: Option[String] = None,
+      options: List[EnumOption],
+      default: Option[List[String]] = None
+  )
+}
+
+/** An enum option with a value and display title. */
+case class EnumOption(
+    /** The enum value. */
+    const: String,
+    /** Display label for this option. */
+    title: String
+) derives Codec.AsObject
+
+object FormFieldSchema {
+  import io.circe.derivation.Configuration
+
+  private given Configuration = Configuration.default
+    .withTransformConstructorNames {
+      case "StringField"          => "string"
+      case "NumberField"          => "number"
+      case "BooleanField"         => "boolean"
+      case "EnumField"            => "string"
+      case "TitledEnumField"      => "string"
+      case "MultiEnumField"       => "array"
+      case "TitledMultiEnumField" => "array"
+      case other                  => other
+    }
+    .withSnakeCaseMemberNames
+    .withDiscriminator("type")
+
+  given Codec.AsObject[FormFieldSchema] = Codec.AsObject.derivedConfigured
+}
+
+/** A form schema for elicitation, containing field definitions. */
+case class FormSchema(
+    properties: Map[String, FormFieldSchema],
+    required: Option[List[String]] = None
+) derives Codec.AsObject
+
+/** A request from the server to elicit information from the user via the client.
+  *
+  * For form mode: `requestedSchema` defines the form fields. For URL mode: `elicitationId` and `url` are required.
+  */
 case class ElicitRequest(
+    /** The elicitation mode. */
     mode: ElicitMode,
+    /** The message to present to the user explaining what information is being requested. */
     message: String,
+    /** A restricted JSON Schema for form mode. Only top-level properties are allowed, without nesting. */
     requestedSchema: Option[JsonObject] = None,
+    /** The ID of the elicitation (required for URL mode). Must be unique within the context of the server. */
+    elicitationId: Option[String] = None,
+    /** The URL that the user should navigate to (required for URL mode). */
     url: Option[String] = None
 ) derives Codec.AsObject
 
@@ -488,11 +688,14 @@ case class CreateTaskResult(
 // ============================================================================
 
 /** This notification can be sent by either side to indicate that it is cancelling a previously-issued request.
+  *
+  * For task cancellation, use the `tasks/cancel` request instead of this notification.
   */
 case class CancelledNotification(
-    /** The ID of the request to cancel. This MUST correspond to the ID of a request previously issued in the same direction.
+    /** The ID of the request to cancel. This MUST correspond to the ID of a request previously issued in the same direction. This MUST be
+      * provided for cancelling non-task requests. This MUST NOT be used for cancelling tasks (use the `tasks/cancel` request instead).
       */
-    requestId: RequestId,
+    requestId: Option[RequestId] = None,
     /** An optional string describing the reason for the cancellation. */
     reason: Option[String] = None
 ) derives Codec.AsObject
@@ -534,3 +737,37 @@ case class PromptListChangedNotification() derives Codec.AsObject
 /** Notification from the client that its list of roots has changed.
   */
 case class RootsListChangedNotification() derives Codec.AsObject
+
+/** This notification is sent from the client to the server after initialization has finished.
+  */
+case class InitializedNotification(
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject
+
+/** An optional notification from the server to the client, informing it of a completion of an out-of-band elicitation request.
+  */
+case class ElicitationCompleteNotification(
+    /** The ID of the elicitation that completed. */
+    elicitationId: String
+) derives Codec.AsObject
+
+/** An optional notification from the receiver to the requestor, informing them that a task's status has changed. Receivers are not required
+  * to send these notifications.
+  */
+case class TaskStatusNotification(
+    /** Unique identifier for this task. */
+    taskId: String,
+    /** Current status of the task. */
+    status: TaskStatus,
+    /** Human-readable status message. */
+    statusMessage: Option[String] = None,
+    /** ISO 8601 timestamp when the task was created. */
+    createdAt: String,
+    /** ISO 8601 timestamp when the task was last updated. */
+    lastUpdatedAt: String,
+    /** Time-to-live in milliseconds. */
+    ttl: Option[Long] = None,
+    /** Suggested polling interval in milliseconds. */
+    pollInterval: Option[Long] = None,
+    _meta: Option[JsonObject] = None
+) derives Codec.AsObject

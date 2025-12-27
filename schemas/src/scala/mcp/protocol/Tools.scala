@@ -119,6 +119,8 @@ case class Tool(
       * CallToolResult. Should be an ObjectSchema in practice.
       */
     outputSchema: Option[JsonSchemaType] = None,
+    /** Execution-related properties for this tool. */
+    execution: Option[ToolExecution] = None,
     /** Optional annotations for tool behavior hints. */
     annotations: Option[ToolAnnotations] = None,
     /** Optional set of sized icons that the client can display in a user interface. */
@@ -144,4 +146,48 @@ case class ToolAnnotations(
     /** Hint that this tool operates in an open world (may return different results over time). Default: true
       */
     openWorldHint: Option[Boolean] = None
+) derives Codec.AsObject
+
+/** Indicates whether a tool supports task-augmented execution. */
+enum TaskSupport derives EnumCodec {
+
+  /** Tool does not support task-augmented execution (default when absent). */
+  case forbidden
+
+  /** Tool may support task-augmented execution. */
+  case optional
+
+  /** Tool requires task-augmented execution. */
+  case required
+}
+
+/** Execution-related properties for a tool.
+  */
+case class ToolExecution(
+    /** Indicates whether this tool supports task-augmented execution. This allows clients to handle long-running operations through polling
+      * the task system.
+      *
+      * Default: "forbidden"
+      */
+    taskSupport: Option[TaskSupport] = None
+) derives Codec.AsObject
+
+/** Controls how the model uses tools during sampling. */
+enum ToolChoiceMode derives EnumCodec {
+
+  /** Model decides whether to use tools (default). */
+  case auto
+
+  /** Model MUST use at least one tool before completing. */
+  case required
+
+  /** Model MUST NOT use any tools. */
+  case none
+}
+
+/** Controls tool selection behavior for sampling requests.
+  */
+case class ToolChoice(
+    /** Controls the tool use ability of the model. Default: "auto" */
+    mode: Option[ToolChoiceMode] = None
 ) derives Codec.AsObject

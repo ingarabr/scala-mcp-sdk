@@ -83,6 +83,53 @@ enum Content {
       /** See General fields: _meta for notes on _meta usage. */
       _meta: Option[JsonObject] = None
   )
+
+  /** A request from the assistant to call a tool.
+    *
+    * JSON type: "tool_use"
+    *
+    * Used in sampling responses when the model wants to use a tool.
+    */
+  case ToolUse(
+      /** A unique identifier for this tool use. Used to match tool results to their corresponding tool uses. */
+      id: String,
+
+      /** The name of the tool to call. */
+      name: String,
+
+      /** The arguments to pass to the tool, conforming to the tool's input schema. */
+      input: JsonObject,
+
+      /** Optional metadata about the tool use. Clients SHOULD preserve this field when including tool uses in subsequent sampling requests
+        * to enable caching optimizations.
+        */
+      _meta: Option[JsonObject] = None
+  )
+
+  /** The result of a tool use, provided by the user back to the assistant.
+    *
+    * JSON type: "tool_result"
+    *
+    * Used in sampling requests to provide the result of a tool call.
+    */
+  case ToolResult(
+      /** The ID of the tool use this result corresponds to. This MUST match the ID from a previous ToolUse. */
+      toolUseId: String,
+
+      /** The unstructured result content of the tool use. Can include text, images, audio, resource links, and embedded resources. */
+      content: List[Content],
+
+      /** An optional structured result object. If the tool defined an outputSchema, this SHOULD conform to that schema. */
+      structuredContent: Option[JsonObject] = None,
+
+      /** Whether the tool use resulted in an error. If true, the content typically describes the error that occurred. */
+      isError: Option[Boolean] = None,
+
+      /** Optional metadata about the tool result. Clients SHOULD preserve this field when including tool results in subsequent sampling
+        * requests to enable caching optimizations.
+        */
+      _meta: Option[JsonObject] = None
+  )
 }
 
 object Content {

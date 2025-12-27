@@ -415,7 +415,13 @@ private class McpServerImpl[F[_]: Async](
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[CancelledNotification] match {
       case Right(notification) =>
-        inFlightRequests.get.flatMap(_.get(notification.requestId).fold(Async[F].unit)(_.cancel))
+        notification.requestId match {
+          case Some(requestId) =>
+            inFlightRequests.get.flatMap(_.get(requestId).fold(Async[F].unit)(_.cancel))
+          case None =>
+            // No requestId - for task cancellation, use tasks/cancel instead
+            Async[F].unit
+        }
       case Left(_) =>
         // Malformed notification - ignore (notifications don't get error responses)
         Async[F].unit

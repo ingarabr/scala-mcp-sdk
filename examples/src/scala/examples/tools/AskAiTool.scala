@@ -37,7 +37,7 @@ object AskAiTool {
         case Some(context) => s"Context:\n$context\n\nQuestion: ${input.question}"
         case None          => input.question
       }
-      val messages = List(SamplingMessage(Role.user, Content.Text(userContent)))
+      val messages = List(SamplingMessage(Role.user, List(Content.Text(userContent))))
 
       ctx
         .sample(
@@ -47,9 +47,9 @@ object AskAiTool {
         )
         .map {
           case SampleResult.Success(result) =>
-            val answer = result.content match {
-              case Content.Text(text, _, _) => text
-              case other                    => other.toString
+            val answer = result.content.headOption match {
+              case Some(Content.Text(text, _, _)) => text
+              case other                          => other.toString
             }
             Output(true, Some(answer), Some(result.model), None)
           case SampleResult.Failed(reason) =>

@@ -213,10 +213,10 @@ trait ToolContext[F[_]] {
     * Example:
     * {{{
     * val messages = List(
-    *   SamplingMessage(Role.user, Content.Text("Summarize this code: ..."))
+    *   SamplingMessage(Role.user, List(Content.Text("Summarize this code: ...")))
     * )
     * ctx.sample(messages, maxTokens = 500).map {
-    *   case SampleResult.Success(result) => result.content
+    *   case SampleResult.Success(result) => result.content // List[Content]
     *   case SampleResult.Failed(reason) => // Handle error
     *   case SampleResult.NotSupported => // Client doesn't support sampling
     * }

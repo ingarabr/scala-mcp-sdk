@@ -64,5 +64,9 @@ case class Implementation(
     /** An optional title for display purposes. If not provided, the name should be used for display. */
     title: Option[String] = None,
     /** An optional human-readable description of what this implementation does. */
-    description: Option[String] = None
+    description: Option[String] = None,
+    /** An optional URL of the website for this implementation. */
+    websiteUrl: Option[String] = None,
+    /** Optional set of sized icons that the client can display in a user interface. */
+    icons: Option[List[Icon]] = None
 ) derives Codec.AsObject
