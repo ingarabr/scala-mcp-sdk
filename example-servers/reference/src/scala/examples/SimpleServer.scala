@@ -21,13 +21,15 @@ import examples.completions.LanguageCompletion
 object SimpleServer extends IOApp.Simple {
 
   def run: IO[Unit] =
-    McpServer[IO](
-      info = Implementation("simple-server", "1.0.0"),
-      tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
-      resources = List(ServerConfigResource[IO], TimestampResource[IO]),
-      prompts = List(GreetingPrompt[IO], TranslatePrompt[IO]),
-      completions = List(LanguageCompletion[IO])
-    ).use { server =>
-      StdioTransport[IO]().use(transport => server.serve(transport))
-    }
+    (for {
+      server <- McpServer[IO](
+        info = Implementation("simple-server", "1.0.0"),
+        tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
+        resources = List(ServerConfigResource[IO], TimestampResource[IO]),
+        prompts = List(GreetingPrompt[IO], TranslatePrompt[IO]),
+        completions = List(LanguageCompletion[IO])
+      )
+      transport <- StdioTransport[IO]()
+      _ <- server.serve(transport)
+    } yield ()).useForever
 }

@@ -21,35 +21,37 @@ import everything.prompts.*
 object EverythingServer extends IOApp.Simple {
 
   def run: IO[Unit] =
-    McpServer[IO](
-      info = Implementation("everything-server", "1.0.0"),
-      tools = List(
-        EchoTool[IO],
-        AddTool[IO],
-        TinyImageTool[IO],
-        LongRunningTool[IO],
-        SamplingTool[IO],
-        GetEnvTool[IO],
-        AnnotatedMessageTool[IO],
-        GetRootsTool[IO]
-      ),
-      resources = List(
-        StaticTextResource[IO],
-        StaticBlobResource[IO]
-      ),
-      resourceTemplates = List(
-        DynamicTextResourceTemplate[IO],
-        DynamicBlobResourceTemplate[IO]
-      ),
-      prompts = List(
-        SimplePrompt[IO],
-        ArgumentsPrompt[IO],
-        EmbeddedResourcePrompt[IO]
-      ),
-      completions = List(
-        ArgumentsPromptCompletion[IO]
+    (for {
+      server <- McpServer[IO](
+        info = Implementation("everything-server", "1.0.0"),
+        tools = List(
+          EchoTool[IO],
+          AddTool[IO],
+          TinyImageTool[IO],
+          LongRunningTool[IO],
+          SamplingTool[IO],
+          GetEnvTool[IO],
+          AnnotatedMessageTool[IO],
+          GetRootsTool[IO]
+        ),
+        resources = List(
+          StaticTextResource[IO],
+          StaticBlobResource[IO]
+        ),
+        resourceTemplates = List(
+          DynamicTextResourceTemplate[IO],
+          DynamicBlobResourceTemplate[IO]
+        ),
+        prompts = List(
+          SimplePrompt[IO],
+          ArgumentsPrompt[IO],
+          EmbeddedResourcePrompt[IO]
+        ),
+        completions = List(
+          ArgumentsPromptCompletion[IO]
+        )
       )
-    ).use { server =>
-      StdioTransport[IO]().use(transport => server.serve(transport))
-    }
+      transport <- StdioTransport[IO]()
+      _ <- server.serve(transport)
+    } yield ()).useForever
 }

@@ -255,7 +255,9 @@ private[session] class HttpSessionManager[F[_]: Async](
 
       transport <- HttpSessionTransport[F](sessionIdOpt, this, requestQueue)
 
-      serverFiber <- server.serve(transport).start
+      // Allocate the serve Resource to get the release function for graceful MCP session shutdown
+      allocated <- server.serve(transport).allocated
+      (_, releaseMcpSession) = allocated
 
       now = Instant.now()
       state = SessionState[F](
@@ -269,7 +271,7 @@ private[session] class HttpSessionManager[F[_]: Async](
         persistentQueue = persistentQueue,
         requestQueue = requestQueue,
         transport = transport,
-        serverFiber = serverFiber
+        releaseMcpSession = releaseMcpSession
       )
       _ <- sessionsRef.update(_ + (sessionIdOpt -> state))
     } yield sessionIdOpt
@@ -292,8 +294,8 @@ private[session] class HttpSessionManager[F[_]: Async](
       sessionOpt <- getSession(id)
       _ <- sessionOpt match {
         case Some(session) =>
-          // Cancel server fiber, terminate queues, and remove session
-          session.serverFiber.cancel >>
+          // Release the MCP session and clean up queues
+          session.releaseMcpSession >>
             session.postResponseQueue.offer(None) >>
             session.persistentQueue.offer(None) >>
             session.requestQueue.offer(None) >>

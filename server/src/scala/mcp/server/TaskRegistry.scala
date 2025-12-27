@@ -35,6 +35,18 @@ trait TaskRegistry[F[_]] {
 
   /** Register a fiber for a task (for cancellation support). */
   def registerFiber(taskId: String, fiber: Fiber[F, Throwable, Unit]): F[Unit]
+
+  /** Await all non-terminal tasks to complete, with a hard timeout.
+    *
+    * This is used during graceful shutdown to wait for running tasks before terminating. Returns when all tasks are in a terminal state
+    * (completed, failed, cancelled) or the timeout is reached.
+    *
+    * @param timeout
+    *   Maximum time to wait for tasks to complete
+    * @return
+    *   List of task IDs that were still running when timeout was reached (empty if all completed)
+    */
+  def awaitAllTasks(timeout: FiniteDuration): F[List[String]]
 }
 
 /** Configuration for task TTL and polling behavior. */
@@ -176,6 +188,33 @@ private class TaskRegistryImpl[F[_]](
         case None        => taskMap
       }
     }
+
+  def awaitAllTasks(timeout: FiniteDuration): F[List[String]] = {
+    val pollInterval = 100.millis
+
+    def getNonTerminalTaskIds: F[List[String]] =
+      tasks.get.map { taskMap =>
+        taskMap.collect {
+          case (taskId, entry) if !entry.task.status.isTerminal => taskId
+        }.toList
+      }
+
+    def poll(remaining: FiniteDuration): F[List[String]] =
+      if remaining <= 0.millis then {
+        getNonTerminalTaskIds
+      } else {
+        getNonTerminalTaskIds.flatMap { nonTerminal =>
+          if nonTerminal.isEmpty then {
+            F.pure(List.empty)
+          } else {
+            val sleepDuration = pollInterval.min(remaining)
+            F.sleep(sleepDuration) *> poll(remaining - sleepDuration)
+          }
+        }
+      }
+
+    poll(timeout)
+  }
 
   /** Lazy cleanup: expire non-terminal tasks past TTL, remove tasks past grace period.
     *

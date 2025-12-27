@@ -1,6 +1,7 @@
 package examples
 
 import cats.effect.IO
+import cats.effect.Resource
 import cats.effect.std.Queue
 import fs2.Stream
 import io.circe.*
@@ -17,6 +18,16 @@ import examples.resources.FileTemplateResource
   * Tests the dynamic resource resolution via URI templates (RFC 6570).
   */
 class ResourceTemplateSuite extends CatsEffectSuite {
+
+  def withServer[A](serverResource: Resource[IO, McpServer[IO]])(
+      test: (Queue[IO, Option[JsonRpcResponse]], Queue[IO, Option[JsonRpcRequest]]) => IO[A]
+  ): IO[A] =
+    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
+      (for {
+        server <- serverResource
+        _ <- server.serve(transport)
+      } yield ()).use(_ => test(serverToClient, clientToServer))
+    }
 
   /** Simple test output type for resources */
   case class FileContent(path: String, content: String) derives Codec.AsObject
@@ -152,101 +163,86 @@ class ResourceTemplateSuite extends CatsEffectSuite {
   }
 
   test("resources/templates/list returns all templates") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "template-test", version = "1.0.0"),
       resourceTemplates = List(fileTemplate, configTemplate)
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/templates/list")
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val templates = result.asJson.hcursor.downField("resourceTemplates").as[List[Json]]
-            assert(templates.isRight)
-            assertEquals(templates.toOption.get.length, 2)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/templates/list")
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val templates = result.asJson.hcursor.downField("resourceTemplates").as[List[Json]]
+          assert(templates.isRight)
+          assertEquals(templates.toOption.get.length, 2)
 
-            val templateNames = templates.toOption.get.flatMap(_.hcursor.downField("name").as[String].toOption)
-            assert(templateNames.contains("Workspace Files"))
-            assert(templateNames.contains("Configuration Sections"))
+          val templateNames = templates.toOption.get.flatMap(_.hcursor.downField("name").as[String].toOption)
+          assert(templateNames.contains("Workspace Files"))
+          assert(templateNames.contains("Configuration Sections"))
 
-          case other =>
-            fail(s"Expected Response, got $other")
-        }
+        case other =>
+          fail(s"Expected Response, got $other")
       }
     }
   }
 
   test("resources/read resolves template and reads resource") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "template-test", version = "1.0.0"),
       resourceTemplates = List(fileTemplate)
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        val readParams = JsonObject("uri" -> "file:///config.json".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val readParams = JsonObject("uri" -> "file:///config.json".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
-            assert(contents.isRight, s"Failed to parse contents: $contents")
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
+          assert(contents.isRight, s"Failed to parse contents: $contents")
 
-            val firstContent = contents.toOption.get.head
-            val text = firstContent.hcursor.downField("text").as[String]
-            assert(text.isRight)
-            // The response contains the FileContent with path and content fields
-            assert(text.toOption.get.contains("config.json"))
-            assert(text.toOption.get.contains("setting"))
+          val firstContent = contents.toOption.get.head
+          val text = firstContent.hcursor.downField("text").as[String]
+          assert(text.isRight)
+          // The response contains the FileContent with path and content fields
+          assert(text.toOption.get.contains("config.json"))
+          assert(text.toOption.get.contains("setting"))
 
-          case JsonRpcResponse.Error(_, _, error) =>
-            fail(s"Got error: ${error.message}")
+        case JsonRpcResponse.Error(_, _, error) =>
+          fail(s"Got error: ${error.message}")
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
 
   test("resources/read returns error when template resolver returns None") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "template-test", version = "1.0.0"),
       resourceTemplates = List(fileTemplate)
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        // Request a file that the resolver returns None for
-        val readParams = JsonObject("uri" -> "file:///missing.txt".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      // Request a file that the resolver returns None for
+      val readParams = JsonObject("uri" -> "file:///missing.txt".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Error(_, _, error) =>
-            assert(error.message.contains("not found"))
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Error(_, _, error) =>
+          assert(error.message.contains("not found"))
 
-          case JsonRpcResponse.Response(_, _, result) =>
-            fail(s"Expected error, got result: $result")
+        case JsonRpcResponse.Response(_, _, result) =>
+          fail(s"Expected error, got result: $result")
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
@@ -258,36 +254,31 @@ class ResourceTemplateSuite extends CatsEffectSuite {
       handler = _ => IO.pure("Static content - should be returned")
     )
 
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "template-test", version = "1.0.0"),
       resources = List(staticResource),
       resourceTemplates = List(fileTemplate)
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        // Request the static resource that also matches the template
-        val readParams = JsonObject("uri" -> "file:///static.txt".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      // Request the static resource that also matches the template
+      val readParams = JsonObject("uri" -> "file:///static.txt".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
-            assert(contents.isRight)
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
+          assert(contents.isRight)
 
-            val text = contents.toOption.get.head.hcursor.downField("text").as[String]
-            assert(text.isRight)
-            // Should get the static content, not template-resolved content
-            assert(text.toOption.get.contains("Static content"))
+          val text = contents.toOption.get.head.hcursor.downField("text").as[String]
+          assert(text.isRight)
+          // Should get the static content, not template-resolved content
+          assert(text.toOption.get.contains("Static content"))
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
@@ -305,34 +296,29 @@ class ResourceTemplateSuite extends CatsEffectSuite {
   }
 
   test("config template resolves different sections") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "template-test", version = "1.0.0"),
       resourceTemplates = List(configTemplate)
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        val readParams = JsonObject("uri" -> "config:///database".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val readParams = JsonObject("uri" -> "config:///database".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
-            assert(contents.isRight)
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
+          assert(contents.isRight)
 
-            val text = contents.toOption.get.head.hcursor.downField("text").as[String]
-            assert(text.isRight)
-            assert(text.toOption.get.contains("localhost"))
-            assert(text.toOption.get.contains("5432"))
+          val text = contents.toOption.get.head.hcursor.downField("text").as[String]
+          assert(text.isRight)
+          assert(text.toOption.get.contains("localhost"))
+          assert(text.toOption.get.contains("5432"))
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
@@ -340,164 +326,139 @@ class ResourceTemplateSuite extends CatsEffectSuite {
   // ===== FileTemplateResource Example Tests =====
 
   test("FileTemplateResource reads readme.md") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "file-template-test", version = "1.0.0"),
       resourceTemplates = List(FileTemplateResource[IO])
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        val readParams = JsonObject("uri" -> "file:///readme.md".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val readParams = JsonObject("uri" -> "file:///readme.md".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
-            assert(contents.isRight)
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
+          assert(contents.isRight)
 
-            val text = contents.toOption.get.head.hcursor.downField("text").as[String]
-            assert(text.isRight)
-            assert(text.toOption.get.contains("Example Project"))
-            assert(text.toOption.get.contains("Getting Started"))
+          val text = contents.toOption.get.head.hcursor.downField("text").as[String]
+          assert(text.isRight)
+          assert(text.toOption.get.contains("Example Project"))
+          assert(text.toOption.get.contains("Getting Started"))
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
 
   test("FileTemplateResource reads config.json") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "file-template-test", version = "1.0.0"),
       resourceTemplates = List(FileTemplateResource[IO])
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        val readParams = JsonObject("uri" -> "file:///config.json".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val readParams = JsonObject("uri" -> "file:///config.json".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
-            assert(contents.isRight)
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
+          assert(contents.isRight)
 
-            val text = contents.toOption.get.head.hcursor.downField("text").as[String]
-            assert(text.isRight)
-            assert(text.toOption.get.contains("my-app"))
-            assert(text.toOption.get.contains("database"))
+          val text = contents.toOption.get.head.hcursor.downField("text").as[String]
+          assert(text.isRight)
+          assert(text.toOption.get.contains("my-app"))
+          assert(text.toOption.get.contains("database"))
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
 
   test("FileTemplateResource reads nested path src/main.scala") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "file-template-test", version = "1.0.0"),
       resourceTemplates = List(FileTemplateResource[IO])
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        // Note: slashes in path get percent-encoded by UriTemplate
-        val readParams = JsonObject("uri" -> "file:///src%2Fmain.scala".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      // Note: slashes in path get percent-encoded by UriTemplate
+      val readParams = JsonObject("uri" -> "file:///src%2Fmain.scala".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
-            assert(contents.isRight)
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val contents = result.asJson.hcursor.downField("contents").as[List[Json]]
+          assert(contents.isRight)
 
-            val text = contents.toOption.get.head.hcursor.downField("text").as[String]
-            assert(text.isRight)
-            assert(text.toOption.get.contains("Hello, MCP!"))
+          val text = contents.toOption.get.head.hcursor.downField("text").as[String]
+          assert(text.isRight)
+          assert(text.toOption.get.contains("Hello, MCP!"))
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
 
   test("FileTemplateResource returns error for non-existent file") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "file-template-test", version = "1.0.0"),
       resourceTemplates = List(FileTemplateResource[IO])
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        val readParams = JsonObject("uri" -> "file:///nonexistent.txt".asJson)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val readParams = JsonObject("uri" -> "file:///nonexistent.txt".asJson)
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Error(_, _, error) =>
-            assert(error.message.contains("not found"))
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readParams))
+      } yield response match {
+        case JsonRpcResponse.Error(_, _, error) =>
+          assert(error.message.contains("not found"))
 
-          case JsonRpcResponse.Response(_, _, result) =>
-            fail(s"Expected error, got result: $result")
+        case JsonRpcResponse.Response(_, _, result) =>
+          fail(s"Expected error, got result: $result")
 
-          case other =>
-            fail(s"Unexpected response: $other")
-        }
+        case other =>
+          fail(s"Unexpected response: $other")
       }
     }
   }
 
   test("FileTemplateResource is listed in templates/list") {
-    McpServer[IO](
+    val serverResource = McpServer[IO](
       Implementation(name = "file-template-test", version = "1.0.0"),
       resourceTemplates = List(FileTemplateResource[IO])
-    ).use { server =>
-      TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-        val serverFiber = server.serve(transport).start
+    )
 
-        for {
-          fiber <- serverFiber
-          _ <- initializeServer(clientToServer, serverToClient)
-          response <- sendRequest(clientToServer, serverToClient, "resources/templates/list")
-          _ <- clientToServer.offer(None)
-          _ <- fiber.join
-        } yield response match {
-          case JsonRpcResponse.Response(_, _, result) =>
-            val templates = result.asJson.hcursor.downField("resourceTemplates").as[List[Json]]
-            assert(templates.isRight)
-            assertEquals(templates.toOption.get.length, 1)
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/templates/list")
+      } yield response match {
+        case JsonRpcResponse.Response(_, _, result) =>
+          val templates = result.asJson.hcursor.downField("resourceTemplates").as[List[Json]]
+          assert(templates.isRight)
+          assertEquals(templates.toOption.get.length, 1)
 
-            val template = templates.toOption.get.head
-            val name = template.hcursor.downField("name").as[String]
-            val uriTemplate = template.hcursor.downField("uriTemplate").as[String]
+          val template = templates.toOption.get.head
+          val name = template.hcursor.downField("name").as[String]
+          val uriTemplate = template.hcursor.downField("uriTemplate").as[String]
 
-            assertEquals(name.toOption, Some("Workspace Files"))
-            assertEquals(uriTemplate.toOption, Some("file:///{path}"))
+          assertEquals(name.toOption, Some("Workspace Files"))
+          assertEquals(uriTemplate.toOption, Some("file:///{path}"))
 
-          case other =>
-            fail(s"Expected Response, got $other")
-        }
+        case other =>
+          fail(s"Expected Response, got $other")
       }
     }
   }

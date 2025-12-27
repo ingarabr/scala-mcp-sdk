@@ -12,6 +12,7 @@ import munit.CatsEffectSuite
 import examples.tools.{AddTool, EchoTool}
 import examples.resources.ServerConfigResource
 import examples.prompts.GreetingPrompt
+import cats.effect.Resource
 
 /** Test suite for the SimpleServer implementation.
   *
@@ -23,6 +24,20 @@ import examples.prompts.GreetingPrompt
   *   5. Use prompts for structured interactions (prompts/get)
   */
 class SimpleServerSuite extends CatsEffectSuite {
+
+  /** Helper to run a test with McpServer and TestTransport as a Resource.
+    *
+    * Creates the transport, starts the server with it, and provides the queues to the test.
+    */
+  def withServer[A](serverResource: Resource[IO, McpServer[IO]])(
+      test: (Queue[IO, Option[JsonRpcResponse]], Queue[IO, Option[JsonRpcRequest]]) => IO[A]
+  ): IO[A] =
+    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
+      (for {
+        server <- serverResource
+        _ <- server.serve(transport)
+      } yield ()).use(_ => test(serverToClient, clientToServer))
+    }
 
   /** In-memory transport for testing - simulates client-server communication */
   class TestTransport(
@@ -98,547 +113,414 @@ class SimpleServerSuite extends CatsEffectSuite {
 
   test("initialize handshake should succeed") {
     TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tools = List(EchoTool[IO], AddTool[IO]),
-        resources = List(ServerConfigResource[IO]),
-        prompts = List(GreetingPrompt[IO])
-      )
+      (for {
+        server <- McpServer[IO](
+          info = Implementation("test-server", "1.0.0"),
+          tools = List(EchoTool[IO], AddTool[IO]),
+          resources = List(ServerConfigResource[IO]),
+          prompts = List(GreetingPrompt[IO])
+        )
+        _ <- server.serve(transport)
+      } yield (serverToClient, clientToServer)).use { case (serverToClient, clientToServer) =>
+        val initRequest = InitializeRequest(
+          protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
+          capabilities = ClientCapabilities(),
+          clientInfo = Implementation("test-client", "1.0.0")
+        )
+        for {
+          // Send initialize request
+          response <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
 
-      serverResource.use { server =>
-        // Start server in background
-        val serverFiber = server.serve(transport).start
+          // Verify response
+          _ = response match {
+            case JsonRpcResponse.Response(_, _, result) =>
+              val initResult = result.asJson.as[InitializeResult]
+              assert(initResult.isRight, s"Failed to decode InitializeResult: $initResult")
+              initResult.toOption match {
+                case Some(initRes) =>
+                  assertEquals(initRes.protocolVersion, Constants.LATEST_PROTOCOL_VERSION)
+                  assertEquals(initRes.serverInfo.name, "test-server")
+                  assert(initRes.capabilities.tools.isDefined, "Server should have tools capability")
+                  assert(initRes.capabilities.resources.isDefined, "Server should have resources capability")
+                  assert(initRes.capabilities.prompts.isDefined, "Server should have prompts capability")
+                case None =>
+                  fail(s"Failed to decode InitializeResult from: $result")
+              }
 
-        serverFiber.flatMap { fiber =>
-          val initRequest = InitializeRequest(
-            protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
-            capabilities = ClientCapabilities(),
-            clientInfo = Implementation("test-client", "1.0.0")
-          )
-          val test = for {
-            // Send initialize request
-            response <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
+            case other =>
+              fail(s"Expected Response, got: $other")
+          }
 
-            // Verify response
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val initResult = result.asJson.as[InitializeResult]
-                assert(initResult.isRight, s"Failed to decode InitializeResult: $initResult")
-                initResult.toOption match {
-                  case Some(initRes) =>
-                    assertEquals(initRes.protocolVersion, Constants.LATEST_PROTOCOL_VERSION)
-                    assertEquals(initRes.serverInfo.name, "test-server")
-                    assert(initRes.capabilities.tools.isDefined, "Server should have tools capability")
-                    assert(initRes.capabilities.resources.isDefined, "Server should have resources capability")
-                    assert(initRes.capabilities.prompts.isDefined, "Server should have prompts capability")
-                  case None =>
-                    fail(s"Failed to decode InitializeResult from: $result")
-                }
-
-              case other =>
-                fail(s"Expected Response, got: $other")
-            }
-
-            // Send initialized notification
-            _ <- clientToServer.offer(
-              Some(
-                JsonRpcRequest.Notification(
-                  jsonrpc = Constants.JSONRPC_VERSION,
-                  method = "notifications/initialized",
-                  params = None
-                )
+          // Send initialized notification
+          _ <- clientToServer.offer(
+            Some(
+              JsonRpcRequest.Notification(
+                jsonrpc = Constants.JSONRPC_VERSION,
+                method = "notifications/initialized",
+                params = None
               )
             )
-
-            // Signal end of stream
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
-        }
+          )
+        } yield ()
       }
     }
   }
 
   test("ping should respond immediately") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0")
-      )
+    withServer(McpServer[IO](info = Implementation("test-server", "1.0.0"))) { (serverToClient, clientToServer) =>
+      for {
+        // Send ping request
+        response <- sendRequest(clientToServer, serverToClient, "ping", None)
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            // Send ping request
-            response <- sendRequest(clientToServer, serverToClient, "ping", None)
-
-            // Verify response is EmptyResult
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val emptyResult = result.asJson.as[EmptyResult]
-                assert(emptyResult.isRight, s"Failed to decode EmptyResult: $emptyResult")
-              case other =>
-                fail(s"Expected Response, got: $other")
-            }
-
-            // Signal end of stream
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+        // Verify response is EmptyResult
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val emptyResult = result.asJson.as[EmptyResult]
+            assert(emptyResult.isRight, s"Failed to decode EmptyResult: $emptyResult")
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("tools/list should return all registered tools") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
+    withServer(
+      McpServer[IO](
         info = Implementation("test-server", "1.0.0"),
         tools = List(EchoTool[IO], AddTool[IO])
       )
+    ) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/list")
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val toolsResult = result.asJson.as[ListToolsResult]
+            assert(toolsResult.isRight, s"Failed to decode ListToolsResult: $toolsResult")
+            toolsResult.toOption match {
+              case Some(listResult) =>
+                val tools = listResult.tools
+                assertEquals(tools.length, 2, "Should have 2 tools")
+                assert(tools.exists(_.name == "echo"), "Should have echo tool")
+                assert(tools.exists(_.name == "add"), "Should have add tool")
 
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "tools/list")
-
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val toolsResult = result.asJson.as[ListToolsResult]
-                assert(toolsResult.isRight, s"Failed to decode ListToolsResult: $toolsResult")
-                toolsResult.toOption match {
-                  case Some(listResult) =>
-                    val tools = listResult.tools
-                    assertEquals(tools.length, 2, "Should have 2 tools")
-                    assert(tools.exists(_.name == "echo"), "Should have echo tool")
-                    assert(tools.exists(_.name == "add"), "Should have add tool")
-
-                    // Verify add tool schema has properties
-                    tools.find(_.name == "add") match {
-                      case Some(addTool) =>
-                        addTool.inputSchema match {
-                          case JsonSchemaType.ObjectSchema(properties, _, _) =>
-                            assert(properties.isDefined, "Add tool should have properties in schema")
-                            assert(properties.get.contains("a"), "Add tool should have field 'a' in schema")
-                            assert(properties.get.contains("b"), "Add tool should have field 'b' in schema")
-                          case _ =>
-                            fail("Add tool inputSchema should be an ObjectSchema")
-                        }
-                      case None =>
-                        fail("Add tool not found in tools list")
+                // Verify add tool schema has properties
+                tools.find(_.name == "add") match {
+                  case Some(addTool) =>
+                    addTool.inputSchema match {
+                      case JsonSchemaType.ObjectSchema(properties, _, _) =>
+                        assert(properties.isDefined, "Add tool should have properties in schema")
+                        assert(properties.get.contains("a"), "Add tool should have field 'a' in schema")
+                        assert(properties.get.contains("b"), "Add tool should have field 'b' in schema")
+                      case _ =>
+                        fail("Add tool inputSchema should be an ObjectSchema")
                     }
                   case None =>
-                    fail(s"Failed to decode ListToolsResult from: $result")
+                    fail("Add tool not found in tools list")
                 }
-
-              case other =>
-                fail(s"Expected Response, got: $other")
+              case None =>
+                fail(s"Failed to decode ListToolsResult from: $result")
             }
 
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("tools/call echo should work correctly") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tools = List(EchoTool[IO])
+    withServer(
+      McpServer[IO](info = Implementation("test-server", "1.0.0"), tools = List(EchoTool[IO]))
+    ) { (serverToClient, clientToServer) =>
+      val callRequest = CallToolRequest(
+        name = "echo",
+        arguments = Some(JsonObject("message" -> Json.fromString("Hello, MCP!")))
       )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val callRequest = CallToolRequest(
-            name = "echo",
-            arguments = Some(JsonObject("message" -> Json.fromString("Hello, MCP!")))
-          )
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
-
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val toolResult = result.asJson.as[CallToolResult]
-                assert(toolResult.isRight, s"Failed to decode CallToolResult: $toolResult")
-                toolResult.toOption match {
-                  case Some(callResult) =>
-                    assertEquals(callResult.isError, Some(false), "Tool should execute without error")
-                    assert(callResult.content.nonEmpty, "Should have content")
-                    val textContent = callResult.content.head.asInstanceOf[Content.Text].text
-                    assert(textContent.contains("Echo: Hello, MCP!"), s"Output should contain echoed message, got: $textContent")
-                  case None =>
-                    fail(s"Failed to decode CallToolResult from: $result")
-                }
-
-              case other =>
-                fail(s"Expected Response, got: $other")
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val toolResult = result.asJson.as[CallToolResult]
+            assert(toolResult.isRight, s"Failed to decode CallToolResult: $toolResult")
+            toolResult.toOption match {
+              case Some(callResult) =>
+                assertEquals(callResult.isError, Some(false), "Tool should execute without error")
+                assert(callResult.content.nonEmpty, "Should have content")
+                val textContent = callResult.content.head.asInstanceOf[Content.Text].text
+                assert(textContent.contains("Echo: Hello, MCP!"), s"Output should contain echoed message, got: $textContent")
+              case None =>
+                fail(s"Failed to decode CallToolResult from: $result")
             }
 
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("tools/call add should work correctly") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tools = List(AddTool[IO])
-      )
-
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val callRequest = CallToolRequest(
-            name = "add",
-            arguments = Some(
-              JsonObject(
-                "a" -> Json.fromDoubleOrNull(5.0),
-                "b" -> Json.fromDoubleOrNull(3.0),
-                "c" -> Json.fromInt(0)
-              )
-            )
+    withServer(
+      McpServer[IO](info = Implementation("test-server", "1.0.0"), tools = List(AddTool[IO]))
+    ) { (serverToClient, clientToServer) =>
+      val callRequest = CallToolRequest(
+        name = "add",
+        arguments = Some(
+          JsonObject(
+            "a" -> Json.fromDoubleOrNull(5.0),
+            "b" -> Json.fromDoubleOrNull(3.0),
+            "c" -> Json.fromInt(0)
           )
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
+        )
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
 
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val toolResult = result.asJson.as[CallToolResult]
-                assert(toolResult.isRight, s"Failed to decode CallToolResult: $toolResult")
-                toolResult.toOption match {
-                  case Some(callResult) =>
-                    assertEquals(callResult.isError, Some(false), "Tool should execute without error")
-                    assert(callResult.content.nonEmpty, "Should have content")
-                    val textContent = callResult.content.head.asInstanceOf[Content.Text].text
-                    parse(textContent).toOption match {
-                      case Some(outputJson) =>
-                        val resultField = outputJson.hcursor.get[Double]("result")
-                        assertEquals(resultField, Right(8.0), "Should add 5.0 + 3.0 = 8.0")
-                      case None =>
-                        fail(s"Failed to parse JSON from tool output: $textContent")
-                    }
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val toolResult = result.asJson.as[CallToolResult]
+            assert(toolResult.isRight, s"Failed to decode CallToolResult: $toolResult")
+            toolResult.toOption match {
+              case Some(callResult) =>
+                assertEquals(callResult.isError, Some(false), "Tool should execute without error")
+                assert(callResult.content.nonEmpty, "Should have content")
+                val textContent = callResult.content.head.asInstanceOf[Content.Text].text
+                parse(textContent).toOption match {
+                  case Some(outputJson) =>
+                    val resultField = outputJson.hcursor.get[Double]("result")
+                    assertEquals(resultField, Right(8.0), "Should add 5.0 + 3.0 = 8.0")
                   case None =>
-                    fail(s"Failed to decode CallToolResult from: $result")
+                    fail(s"Failed to parse JSON from tool output: $textContent")
                 }
-
-              case other =>
-                fail(s"Expected Response, got: $other")
+              case None =>
+                fail(s"Failed to decode CallToolResult from: $result")
             }
 
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("resources/list should return all registered resources") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        resources = List(ServerConfigResource[IO])
-      )
+    withServer(
+      McpServer[IO](info = Implementation("test-server", "1.0.0"), resources = List(ServerConfigResource[IO]))
+    ) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "resources/list")
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "resources/list")
-
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val resourcesResult = result.asJson.as[ListResourcesResult]
-                assert(resourcesResult.isRight, s"Failed to decode ListResourcesResult: $resourcesResult")
-                resourcesResult.toOption match {
-                  case Some(listResult) =>
-                    val resources = listResult.resources
-                    assertEquals(resources.length, 1, "Should have 1 resource")
-                    assertEquals(resources.head.name, "Server Configuration")
-                    assertEquals(resources.head.uri, "config://server.json")
-                  case None =>
-                    fail(s"Failed to decode ListResourcesResult from: $result")
-                }
-
-              case other =>
-                fail(s"Expected Response, got: $other")
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val resourcesResult = result.asJson.as[ListResourcesResult]
+            assert(resourcesResult.isRight, s"Failed to decode ListResourcesResult: $resourcesResult")
+            resourcesResult.toOption match {
+              case Some(listResult) =>
+                val resources = listResult.resources
+                assertEquals(resources.length, 1, "Should have 1 resource")
+                assertEquals(resources.head.name, "Server Configuration")
+                assertEquals(resources.head.uri, "config://server.json")
+              case None =>
+                fail(s"Failed to decode ListResourcesResult from: $result")
             }
 
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("prompts/list should return all registered prompts") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        prompts = List(GreetingPrompt[IO])
-      )
+    withServer(
+      McpServer[IO](info = Implementation("test-server", "1.0.0"), prompts = List(GreetingPrompt[IO]))
+    ) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "prompts/list")
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "prompts/list")
-
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val promptsResult = result.asJson.as[ListPromptsResult]
-                assert(promptsResult.isRight, s"Failed to decode ListPromptsResult: $promptsResult")
-                promptsResult.toOption match {
-                  case Some(listResult) =>
-                    val prompts = listResult.prompts
-                    assertEquals(prompts.length, 1, "Should have 1 prompt")
-                    assertEquals(prompts.head.name, "greeting")
-                  case None =>
-                    fail(s"Failed to decode ListPromptsResult from: $result")
-                }
-
-              case other =>
-                fail(s"Expected Response, got: $other")
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val promptsResult = result.asJson.as[ListPromptsResult]
+            assert(promptsResult.isRight, s"Failed to decode ListPromptsResult: $promptsResult")
+            promptsResult.toOption match {
+              case Some(listResult) =>
+                val prompts = listResult.prompts
+                assertEquals(prompts.length, 1, "Should have 1 prompt")
+                assertEquals(prompts.head.name, "greeting")
+              case None =>
+                fail(s"Failed to decode ListPromptsResult from: $result")
             }
 
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("simulate complete LLM workflow - user asks to add two numbers") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
+    withServer(
+      McpServer[IO](
         info = Implementation("simple-server", "1.0.0"),
         tools = List(EchoTool[IO], AddTool[IO]),
         resources = List(ServerConfigResource[IO]),
         prompts = List(GreetingPrompt[IO])
       )
+    ) { (serverToClient, clientToServer) =>
+      val initRequest = InitializeRequest(
+        protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
+        capabilities = ClientCapabilities(),
+        clientInfo = Implementation("claude-desktop", "1.0.0")
+      )
+      for {
+        // Step 1: LLM initializes connection
+        initResponse <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
+        _ = initResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            result.asJson.as[InitializeResult].toOption match {
+              case Some(_) => ()
+              case None    =>
+                fail(s"Failed to decode InitializeResult from: $result")
+            }
+          case other => fail(s"Unexpected response: $other")
+        }
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
+        // Send initialized notification (no response expected per JSON-RPC spec)
+        _ <- clientToServer.offer(
+          Some(JsonRpcRequest.Notification(Constants.JSONRPC_VERSION, "notifications/initialized", None))
+        )
 
-        serverFiber.flatMap { fiber =>
-          val initRequest = InitializeRequest(
-            protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
-            capabilities = ClientCapabilities(),
-            clientInfo = Implementation("claude-desktop", "1.0.0")
+        // Step 2: LLM discovers available tools
+        toolsResponse <- sendRequest(clientToServer, serverToClient, "tools/list")
+        _ = toolsResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            result.asJson.as[ListToolsResult] match {
+              case Right(_)  => ()
+              case Left(err) =>
+                fail(s"Failed to decode ListToolsResult. Error: $err, Raw result: ${result.asJson.spaces2}")
+            }
+          case other => fail(s"Unexpected response: $other")
+        }
+
+        // Step 3: User asks "What is 42 + 17?"
+        // Step 4: LLM calls the add tool
+        addRequest = CallToolRequest(
+          name = "add",
+          arguments = Some(
+            JsonObject(
+              "a" -> Json.fromDoubleOrNull(42.0),
+              "b" -> Json.fromDoubleOrNull(17.0),
+              "c" -> Json.fromInt(0)
+            )
           )
-          val test = for {
-            // Step 1: LLM initializes connection
-            initResponse <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
-            _ = initResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                result.asJson.as[InitializeResult].toOption match {
-                  case Some(_) => ()
-                  case None    =>
-                    fail(s"Failed to decode InitializeResult from: $result")
-                }
-              case other => fail(s"Unexpected response: $other")
-            }
-
-            // Send initialized notification (no response expected per JSON-RPC spec)
-            _ <- clientToServer.offer(
-              Some(JsonRpcRequest.Notification(Constants.JSONRPC_VERSION, "notifications/initialized", None))
-            )
-
-            // Step 2: LLM discovers available tools
-            toolsResponse <- sendRequest(clientToServer, serverToClient, "tools/list")
-            _ = toolsResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                result.asJson.as[ListToolsResult] match {
-                  case Right(_)  => ()
-                  case Left(err) =>
-                    fail(s"Failed to decode ListToolsResult. Error: $err, Raw result: ${result.asJson.spaces2}")
-                }
-              case other => fail(s"Unexpected response: $other")
-            }
-
-            // Step 3: User asks "What is 42 + 17?"
-            // Step 4: LLM calls the add tool
-            addRequest = CallToolRequest(
-              name = "add",
-              arguments = Some(
-                JsonObject(
-                  "a" -> Json.fromDoubleOrNull(42.0),
-                  "b" -> Json.fromDoubleOrNull(17.0),
-                  "c" -> Json.fromInt(0)
-                )
-              )
-            )
-            addResponse <- sendRequest(clientToServer, serverToClient, "tools/call", Some(addRequest.asJsonObject))
-            _ = addResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                result.asJson.as[CallToolResult].toOption match {
-                  case Some(callResult) =>
-                    assert(callResult.isError.contains(false), "Tool execution should succeed")
-                    val textContent = callResult.content.head.asInstanceOf[Content.Text].text
-                    parse(textContent).toOption match {
-                      case Some(outputJson) =>
-                        outputJson.hcursor.get[Double]("result").toOption match {
-                          case Some(resultValue) =>
-                            assertEquals(resultValue, 59.0, "42 + 17 should equal 59")
-                          case None =>
-                            fail(s"Failed to extract 'result' field from: $outputJson")
-                        }
+        )
+        addResponse <- sendRequest(clientToServer, serverToClient, "tools/call", Some(addRequest.asJsonObject))
+        _ = addResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            result.asJson.as[CallToolResult].toOption match {
+              case Some(callResult) =>
+                assert(callResult.isError.contains(false), "Tool execution should succeed")
+                val textContent = callResult.content.head.asInstanceOf[Content.Text].text
+                parse(textContent).toOption match {
+                  case Some(outputJson) =>
+                    outputJson.hcursor.get[Double]("result").toOption match {
+                      case Some(resultValue) =>
+                        assertEquals(resultValue, 59.0, "42 + 17 should equal 59")
                       case None =>
-                        fail(s"Failed to parse JSON from tool output: $textContent")
+                        fail(s"Failed to extract 'result' field from: $outputJson")
                     }
                   case None =>
-                    fail(s"Failed to decode CallToolResult from: $result")
+                    fail(s"Failed to parse JSON from tool output: $textContent")
                 }
-              case other => fail(s"Unexpected response: $other")
+              case None =>
+                fail(s"Failed to decode CallToolResult from: $result")
             }
-
-            // Cleanup
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other => fail(s"Unexpected response: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("simulate LLM workflow - user asks for server configuration") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("simple-server", "1.0.0"),
-        resources = List(ServerConfigResource[IO])
-      )
+    withServer(
+      McpServer[IO](info = Implementation("simple-server", "1.0.0"), resources = List(ServerConfigResource[IO]))
+    ) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-
-            // Step 1: LLM lists available resources
-            resourcesResponse <- sendRequest(clientToServer, serverToClient, "resources/list")
-            resourceUri <- IO {
-              resourcesResponse match {
-                case JsonRpcResponse.Response(_, _, result) =>
-                  result.asJson.as[ListResourcesResult].toOption match {
-                    case Some(resourcesResult) if resourcesResult.resources.nonEmpty =>
-                      resourcesResult.resources.head.uri
-                    case Some(_) =>
-                      fail("No resources found in response")
-                    case None =>
-                      fail(s"Failed to decode ListResourcesResult from: $result")
-                  }
-                case other => fail(s"Unexpected response: $other")
+        // Step 1: LLM lists available resources
+        resourcesResponse <- sendRequest(clientToServer, serverToClient, "resources/list")
+        resourceUri <- IO {
+          resourcesResponse match {
+            case JsonRpcResponse.Response(_, _, result) =>
+              result.asJson.as[ListResourcesResult].toOption match {
+                case Some(resourcesResult) if resourcesResult.resources.nonEmpty =>
+                  resourcesResult.resources.head.uri
+                case Some(_) =>
+                  fail("No resources found in response")
+                case None =>
+                  fail(s"Failed to decode ListResourcesResult from: $result")
               }
-            }
-
-            // Step 2: LLM reads the specific resource
-            readRequest = ReadResourceRequest(uri = resourceUri)
-            readResponse <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readRequest.asJsonObject))
-            _ = readResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                result.asJson.as[ReadResourceResult].toOption match {
-                  case Some(readResult) if readResult.contents.nonEmpty =>
-                    val content = readResult.contents.head.asInstanceOf[ResourceContents.Text]
-                    assert(content.text.contains("simple-server"), "Should contain server name")
-                    assert(content.text.contains("1.0.0"), "Should contain version")
-                  case Some(_) =>
-                    fail("No contents found in ReadResourceResult")
-                  case None =>
-                    fail(s"Failed to decode ReadResourceResult from: $result")
-                }
-              case other => fail(s"Unexpected response: $other")
-            }
-
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+            case other => fail(s"Unexpected response: $other")
+          }
         }
-      }
+
+        // Step 2: LLM reads the specific resource
+        readRequest = ReadResourceRequest(uri = resourceUri)
+        readResponse <- sendRequest(clientToServer, serverToClient, "resources/read", Some(readRequest.asJsonObject))
+        _ = readResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            result.asJson.as[ReadResourceResult].toOption match {
+              case Some(readResult) if readResult.contents.nonEmpty =>
+                val content = readResult.contents.head.asInstanceOf[ResourceContents.Text]
+                assert(content.text.contains("simple-server"), "Should contain server name")
+                assert(content.text.contains("1.0.0"), "Should contain version")
+              case Some(_) =>
+                fail("No contents found in ReadResourceResult")
+              case None =>
+                fail(s"Failed to decode ReadResourceResult from: $result")
+            }
+          case other => fail(s"Unexpected response: $other")
+        }
+      } yield ()
     }
   }
 
   test("simulate LLM workflow - using greeting prompt") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("simple-server", "1.0.0"),
-        prompts = List(GreetingPrompt[IO])
-      )
+    withServer(
+      McpServer[IO](info = Implementation("simple-server", "1.0.0"), prompts = List(GreetingPrompt[IO]))
+    ) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-
-            // Step 1: Get the prompt with arguments
-            promptRequest = GetPromptRequest(
-              name = "greeting",
-              arguments = Some(JsonObject("name" -> Json.fromString("Alice")))
-            )
-            promptResponse <- sendRequest(clientToServer, serverToClient, "prompts/get", Some(promptRequest.asJsonObject))
-            _ = promptResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                result.asJson.as[GetPromptResult].toOption match {
-                  case Some(promptResult) =>
-                    promptResult.messages.foreach { msg =>
-                      val text = msg.content.asInstanceOf[Content.Text].text
-                      assert(text.contains("Alice"), "Greeting should include the name")
-                    }
-                  case None =>
-                    fail(s"Failed to decode GetPromptResult from: $result")
+        // Step 1: Get the prompt with arguments
+        promptRequest = GetPromptRequest(
+          name = "greeting",
+          arguments = Some(JsonObject("name" -> Json.fromString("Alice")))
+        )
+        promptResponse <- sendRequest(clientToServer, serverToClient, "prompts/get", Some(promptRequest.asJsonObject))
+        _ = promptResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            result.asJson.as[GetPromptResult].toOption match {
+              case Some(promptResult) =>
+                promptResult.messages.foreach { msg =>
+                  val text = msg.content.asInstanceOf[Content.Text].text
+                  assert(text.contains("Alice"), "Greeting should include the name")
                 }
-              case other => fail(s"Unexpected response: $other")
+              case None =>
+                fail(s"Failed to decode GetPromptResult from: $result")
             }
-
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other => fail(s"Unexpected response: $other")
         }
-      }
+      } yield ()
     }
   }
 }

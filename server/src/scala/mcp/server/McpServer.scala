@@ -50,10 +50,14 @@ trait McpServer[F[_]] {
     *   - Send responses back through the transport
     *   - Handle the initialization handshake
     *
+    * The returned Resource manages the server's lifecycle
+    *
     * @param transport
     *   The transport to use for communication
+    * @return
+    *   Resource that manages the server lifecycle
     */
-  def serve(transport: Transport[F]): F[Unit]
+  def serve(transport: Transport[F]): CatsResource[F, Unit]
 
   /** Get the server's capabilities based on registered primitives */
   def capabilities: ServerCapabilities
@@ -91,6 +95,9 @@ trait McpServer[F[_]] {
 }
 object McpServer {
 
+  /** Default timeout for graceful shutdown. */
+  val DefaultShutdownTimeout: FiniteDuration = 30.seconds
+
   /** Create a new MCP server with pre-defined primitives.
     *
     * @param info
@@ -114,6 +121,8 @@ object McpServer {
     * @param useTasksForOutgoingRequests
     *   Whether to use task augmentation for outgoing requests (sampling/elicitation). When enabled, the server will add task params to
     *   outgoing requests if the client supports tasks, and poll for completion. Requires tasksEnabled=true.
+    * @param shutdownTimeout
+    *   Maximum time to wait for running tasks during graceful shutdown
     * @return
     *   Resource managing the server lifecycle
     */
@@ -127,7 +136,8 @@ object McpServer {
       paginationConfig: PaginationConfig = PaginationConfig.Default,
       tasksEnabled: Boolean = false,
       taskConfig: TaskConfig = TaskConfig(),
-      useTasksForOutgoingRequests: Boolean = false
+      useTasksForOutgoingRequests: Boolean = false,
+      shutdownTimeout: FiniteDuration = DefaultShutdownTimeout
   ): CatsResource[F, McpServer[F]] =
     CatsResource.eval {
       for {
@@ -147,7 +157,8 @@ object McpServer {
         activeTransport = activeTransport,
         inFlightRequests = inFlightRequests,
         taskRegistry = taskRegistry,
-        useTasksForOutgoing = useTasksForOutgoingRequests && tasksEnabled
+        useTasksForOutgoing = useTasksForOutgoingRequests && tasksEnabled,
+        shutdownTimeout = shutdownTimeout
       )
     }
 }
@@ -171,7 +182,8 @@ private class McpServerImpl[F[_]: Async](
     activeTransport: Ref[F, Option[Transport[F]]],
     inFlightRequests: Ref[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]],
     taskRegistry: Option[TaskRegistry[F]],
-    useTasksForOutgoing: Boolean
+    useTasksForOutgoing: Boolean,
+    shutdownTimeout: FiniteDuration
 ) extends McpServer[F] {
 
   /** Merged stream of all resource updates from resources and templates. */
@@ -206,20 +218,46 @@ private class McpServerImpl[F[_]: Async](
     )
   }
 
-  def serve(transport: Transport[F]): F[Unit] =
-    Async[F].bracket(activeTransport.set(Some(transport))) { _ =>
-      // Main message handling stream
-      val messageStream = transport.receive
-        .evalMap(handleMessage(_, transport))
-        .collect { case Some(msg) => msg }
-        .foreach(response => transport.send(response))
+  def serve(transport: Transport[F]): CatsResource[F, Unit] = {
+    // Main message handling stream
+    val messageStream = transport.receive
+      .evalMap(handleMessage(_, transport))
+      .collect { case Some(msg) => msg }
+      .foreach(response => transport.send(response))
 
-      // Resource updates stream - sends notifications for subscribed URIs
-      val updatesStream = resourceUpdates.evalMap(notifyResourceUpdated)
+    // Resource updates stream - sends notifications for subscribed URIs
+    val updatesStream = resourceUpdates.evalMap(notifyResourceUpdated)
 
-      // Run both streams concurrently - updates stream runs alongside message handling
-      messageStream.concurrently(updatesStream).compile.drain
-    }(_ => activeTransport.set(None))
+    // Combined stream that processes messages and handles resource updates
+    val combinedStream = messageStream.concurrently(updatesStream)
+
+    CatsResource
+      .make(
+        // Acquire: set transport and start message processing in background
+        activeTransport.set(Some(transport)) *>
+          Async[F].start(combinedStream.compile.drain).map(_.cancel)
+      ) { cancelStream =>
+        // Release: graceful shutdown
+        for {
+          // 1. Transition to Shutdown state - prevents new requests from being processed
+          _ <- connectionState.set(ConnectionState.Shutdown)
+
+          // 2. Cancel in-flight request fibers
+          inFlight <- inFlightRequests.getAndSet(Map.empty)
+          _ <- inFlight.values.toList.traverse_(_.cancel)
+
+          // 3. Wait for running tasks with hard timeout (if tasks enabled)
+          _ <- taskRegistry.traverse_(registry => registry.awaitAllTasks(shutdownTimeout))
+
+          // 4. Cancel the message processing stream
+          _ <- cancelStream
+
+          // 5. Clear the transport reference
+          _ <- activeTransport.set(None)
+        } yield ()
+      }
+      .void
+  }
 
   /** Handle an incoming JSON-RPC request and optionally generate a response.
     *

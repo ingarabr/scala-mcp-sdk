@@ -1,6 +1,7 @@
 package examples
 
 import cats.effect.IO
+import cats.effect.Resource
 import cats.effect.std.Queue
 import fs2.Stream
 import io.circe.*
@@ -13,6 +14,16 @@ import examples.tools.EchoTool
 import scala.concurrent.duration.*
 
 class TasksSuite extends CatsEffectSuite {
+
+  def withServer[A](serverResource: Resource[IO, McpServer[IO]])(
+      test: (Queue[IO, Option[JsonRpcResponse]], Queue[IO, Option[JsonRpcRequest]]) => IO[A]
+  ): IO[A] =
+    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
+      (for {
+        server <- serverResource
+        _ <- server.serve(transport)
+      } yield ()).use(_ => test(serverToClient, clientToServer))
+    }
 
   class TestTransport(
       serverToClient: Queue[IO, Option[JsonRpcResponse]],
@@ -83,295 +94,233 @@ class TasksSuite extends CatsEffectSuite {
   }
 
   test("server with tasks enabled should advertise tasks capability") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tools = List(EchoTool[IO]),
-        tasksEnabled = true
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(EchoTool[IO]),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val initRequest = InitializeRequest(
+        protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
+        capabilities = ClientCapabilities(),
+        clientInfo = Implementation("test-client", "1.0.0")
       )
-
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val initRequest = InitializeRequest(
-            protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
-            capabilities = ClientCapabilities(),
-            clientInfo = Implementation("test-client", "1.0.0")
-          )
-          val test = for {
-            response <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val initResult = result.asJson.as[InitializeResult]
-                initResult.toOption match {
-                  case Some(res) =>
-                    assert(res.capabilities.tasks.isDefined, "Server should advertise tasks capability")
-                    assert(
-                      res.capabilities.tasks.flatMap(_.requests).flatMap(_.tools).flatMap(_.call).isDefined,
-                      "Tasks should support tools/call"
-                    )
-                  case None =>
-                    fail(s"Failed to decode InitializeResult from: $result")
-                }
-              case other =>
-                fail(s"Expected Response, got: $other")
+      for {
+        response <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequest.asJsonObject))
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val initResult = result.asJson.as[InitializeResult]
+            initResult.toOption match {
+              case Some(res) =>
+                assert(res.capabilities.tasks.isDefined, "Server should advertise tasks capability")
+                assert(
+                  res.capabilities.tasks.flatMap(_.requests).flatMap(_.tools).flatMap(_.call).isDefined,
+                  "Tasks should support tools/call"
+                )
+              case None =>
+                fail(s"Failed to decode InitializeResult from: $result")
             }
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("tasks/list should return empty list initially") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tools = List(EchoTool[IO]),
-        tasksEnabled = true
-      )
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(EchoTool[IO]),
+      tasksEnabled = true
+    )
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "tasks/list")
-            _ = response match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val listResult = result.asJson.as[ListTasksResult]
-                listResult.toOption match {
-                  case Some(res) =>
-                    assertEquals(res.tasks, List.empty[Task])
-                  case None =>
-                    fail(s"Failed to decode ListTasksResult from: $result")
-                }
-              case other =>
-                fail(s"Expected Response, got: $other")
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tasks/list")
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val listResult = result.asJson.as[ListTasksResult]
+            listResult.toOption match {
+              case Some(res) =>
+                assertEquals(res.tasks, List.empty[Task])
+              case None =>
+                fail(s"Failed to decode ListTasksResult from: $result")
             }
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+          case other =>
+            fail(s"Expected Response, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("task-augmented tools/call should return CreateTaskResult") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tools = List(EchoTool[IO]),
-        tasksEnabled = true
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(EchoTool[IO]),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = JsonObject(
+        "name" -> Json.fromString("echo"),
+        "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
+        "task" -> Json.obj("ttl" -> Json.fromLong(60000L))
       )
-
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val callRequest = JsonObject(
-            "name" -> Json.fromString("echo"),
-            "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
-            "task" -> Json.obj("ttl" -> Json.fromLong(60000L))
-          )
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
-            taskId <- IO {
-              response match {
-                case JsonRpcResponse.Response(_, _, result) =>
-                  val createResult = result.asJson.as[CreateTaskResult]
-                  createResult.toOption match {
-                    case Some(res) =>
-                      assertEquals(res.task.status, TaskStatus.working)
-                      assert(res.task.taskId.nonEmpty)
-                      res.task.taskId
-                    case None =>
-                      fail(s"Failed to decode CreateTaskResult from: $result")
-                  }
-                case other =>
-                  fail(s"Expected Response, got: $other")
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
+        taskId <- IO {
+          response match {
+            case JsonRpcResponse.Response(_, _, result) =>
+              val createResult = result.asJson.as[CreateTaskResult]
+              createResult.toOption match {
+                case Some(res) =>
+                  assertEquals(res.task.status, TaskStatus.working)
+                  assert(res.task.taskId.nonEmpty)
+                  res.task.taskId
+                case None =>
+                  fail(s"Failed to decode CreateTaskResult from: $result")
               }
-            }
-
-            // Wait for task to complete
-            _ <- IO.sleep(100.millis)
-
-            // Poll tasks/get
-            getRequest = GetTaskRequest(taskId = taskId)
-            getResponse <- sendRequest(clientToServer, serverToClient, "tasks/get", Some(getRequest.asJsonObject), "test-2")
-            _ = getResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val getResult = result.asJson.as[GetTaskResult]
-                getResult.toOption match {
-                  case Some(res) =>
-                    assertEquals(res.task.status, TaskStatus.completed)
-                  case None =>
-                    fail(s"Failed to decode GetTaskResult from: $result")
-                }
-              case other =>
-                fail(s"Expected Response, got: $other")
-            }
-
-            // Get the result
-            resultRequest = GetTaskResultRequest(taskId = taskId)
-            resultResponse <- sendRequest(
-              clientToServer,
-              serverToClient,
-              "tasks/result",
-              Some(resultRequest.asJsonObject),
-              "test-3"
-            )
-            _ = resultResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val content = result("content").flatMap(_.asArray)
-                assert(content.isDefined, "Result should have content")
-                val meta = result("_meta").flatMap(_.asObject)
-                assert(meta.isDefined, "Result should have _meta with related-task")
-              case other =>
-                fail(s"Expected Response, got: $other")
-            }
-
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+            case other =>
+              fail(s"Expected Response, got: $other")
+          }
         }
-      }
+
+        // Wait for task to complete
+        _ <- IO.sleep(100.millis)
+
+        // Poll tasks/get
+        getRequest = GetTaskRequest(taskId = taskId)
+        getResponse <- sendRequest(clientToServer, serverToClient, "tasks/get", Some(getRequest.asJsonObject), "test-2")
+        _ = getResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val getResult = result.asJson.as[GetTaskResult]
+            getResult.toOption match {
+              case Some(res) =>
+                assertEquals(res.task.status, TaskStatus.completed)
+              case None =>
+                fail(s"Failed to decode GetTaskResult from: $result")
+            }
+          case other =>
+            fail(s"Expected Response, got: $other")
+        }
+
+        // Get the result
+        resultRequest = GetTaskResultRequest(taskId = taskId)
+        resultResponse <- sendRequest(
+          clientToServer,
+          serverToClient,
+          "tasks/result",
+          Some(resultRequest.asJsonObject),
+          "test-3"
+        )
+        _ = resultResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val content = result("content").flatMap(_.asArray)
+            assert(content.isDefined, "Result should have content")
+            val meta = result("_meta").flatMap(_.asObject)
+            assert(meta.isDefined, "Result should have _meta with related-task")
+          case other =>
+            fail(s"Expected Response, got: $other")
+        }
+      } yield ()
     }
   }
 
   test("tasks/cancel should cancel a running task") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tools = List(EchoTool[IO]),
-        tasksEnabled = true
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(EchoTool[IO]),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = JsonObject(
+        "name" -> Json.fromString("echo"),
+        "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
+        "task" -> Json.obj()
       )
-
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val callRequest = JsonObject(
-            "name" -> Json.fromString("echo"),
-            "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
-            "task" -> Json.obj()
-          )
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
-            taskId <- IO {
-              response match {
-                case JsonRpcResponse.Response(_, _, result) =>
-                  result.asJson.as[CreateTaskResult].toOption.map(_.task.taskId).getOrElse(fail("No taskId"))
-                case other =>
-                  fail(s"Expected Response, got: $other")
-              }
-            }
-
-            // Cancel the task
-            cancelRequest = CancelTaskRequest(taskId = taskId)
-            cancelResponse <- sendRequest(
-              clientToServer,
-              serverToClient,
-              "tasks/cancel",
-              Some(cancelRequest.asJsonObject),
-              "test-2"
-            )
-            _ = cancelResponse match {
-              case JsonRpcResponse.Response(_, _, result) =>
-                val cancelResult = result.asJson.as[CancelTaskResult]
-                cancelResult.toOption match {
-                  case Some(res) =>
-                    assertEquals(res.task.status, TaskStatus.cancelled)
-                  case None =>
-                    // Task may have already completed - that's ok
-                    ()
-                }
-              case JsonRpcResponse.Error(_, _, err) =>
-                // Task may have already completed
-                assert(err.message.contains("Cannot cancel"), s"Unexpected error: ${err.message}")
-              case other =>
-                fail(s"Expected Response, got: $other")
-            }
-
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
+        taskId <- IO {
+          response match {
+            case JsonRpcResponse.Response(_, _, result) =>
+              result.asJson.as[CreateTaskResult].toOption.map(_.task.taskId).getOrElse(fail("No taskId"))
+            case other =>
+              fail(s"Expected Response, got: $other")
+          }
         }
-      }
+
+        // Cancel the task
+        cancelRequest = CancelTaskRequest(taskId = taskId)
+        cancelResponse <- sendRequest(
+          clientToServer,
+          serverToClient,
+          "tasks/cancel",
+          Some(cancelRequest.asJsonObject),
+          "test-2"
+        )
+        _ = cancelResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val cancelResult = result.asJson.as[CancelTaskResult]
+            cancelResult.toOption match {
+              case Some(res) =>
+                assertEquals(res.task.status, TaskStatus.cancelled)
+              case None =>
+                // Task may have already completed - that's ok
+                ()
+            }
+          case JsonRpcResponse.Error(_, _, err) =>
+            // Task may have already completed
+            assert(err.message.contains("Cannot cancel"), s"Unexpected error: ${err.message}")
+          case other =>
+            fail(s"Expected Response, got: $other")
+        }
+      } yield ()
     }
   }
 
   test("tasks/get should return error for unknown task") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tasksEnabled = true
-      )
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tasksEnabled = true
+    )
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            getRequest = GetTaskRequest(taskId = "unknown-task-id")
-            getResponse <- sendRequest(clientToServer, serverToClient, "tasks/get", Some(getRequest.asJsonObject))
-            _ = getResponse match {
-              case JsonRpcResponse.Error(_, _, err) =>
-                assert(err.message.contains("not found"), s"Should report task not found: ${err.message}")
-              case other =>
-                fail(s"Expected Error, got: $other")
-            }
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        getRequest = GetTaskRequest(taskId = "unknown-task-id")
+        getResponse <- sendRequest(clientToServer, serverToClient, "tasks/get", Some(getRequest.asJsonObject))
+        _ = getResponse match {
+          case JsonRpcResponse.Error(_, _, err) =>
+            assert(err.message.contains("not found"), s"Should report task not found: ${err.message}")
+          case other =>
+            fail(s"Expected Error, got: $other")
         }
-      }
+      } yield ()
     }
   }
 
   test("tasks endpoints should return error when tasks not enabled") {
-    TestTransport.create.flatMap { case (transport, serverToClient, clientToServer) =>
-      val serverResource = McpServer[IO](
-        info = Implementation("test-server", "1.0.0"),
-        tasksEnabled = false
-      )
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tasksEnabled = false
+    )
 
-      serverResource.use { server =>
-        val serverFiber = server.serve(transport).start
-
-        serverFiber.flatMap { fiber =>
-          val test = for {
-            _ <- initializeServer(clientToServer, serverToClient)
-            response <- sendRequest(clientToServer, serverToClient, "tasks/list")
-            _ = response match {
-              case JsonRpcResponse.Error(_, _, err) =>
-                assert(err.message.contains("not enabled"), s"Should report tasks not enabled: ${err.message}")
-              case other =>
-                fail(s"Expected Error, got: $other")
-            }
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-
-          test
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tasks/list")
+        _ = response match {
+          case JsonRpcResponse.Error(_, _, err) =>
+            assert(err.message.contains("not enabled"), s"Should report tasks not enabled: ${err.message}")
+          case other =>
+            fail(s"Expected Error, got: $other")
         }
-      }
+      } yield ()
     }
   }
 }

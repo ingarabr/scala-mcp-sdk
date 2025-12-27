@@ -1,6 +1,6 @@
 package mcp.http4s.session
 
-import cats.effect.{Fiber, Sync}
+import cats.effect.Sync
 import cats.effect.std.Queue
 import cats.syntax.all.*
 import io.circe.{Decoder, Encoder}
@@ -65,8 +65,8 @@ object EventId {
   *   Queue for incoming requests from POST /mcp
   * @param transport
   *   HTTP transport for this session
-  * @param serverFiber
-  *   Background fiber running McpServer.serve for this session
+  * @param releaseMcpSession
+  *   Release function to gracefully shut down MCP protocol message processing for this session
   */
 case class SessionState[F[_]](
     id: Option[SessionId],
@@ -79,5 +79,5 @@ case class SessionState[F[_]](
     persistentQueue: Queue[F, Option[io.circe.Json]], // Changed to Json to support both responses and server requests
     requestQueue: Queue[F, Option[JsonRpcRequest]],
     transport: HttpSessionTransport[F],
-    serverFiber: Fiber[F, Throwable, Unit]
+    releaseMcpSession: F[Unit]
 )

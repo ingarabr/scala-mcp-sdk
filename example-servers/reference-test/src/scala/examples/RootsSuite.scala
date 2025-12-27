@@ -1,6 +1,7 @@
 package examples
 
 import cats.effect.IO
+import cats.effect.Resource
 import cats.effect.std.Queue
 import cats.effect.kernel.Ref
 import fs2.Stream
@@ -15,9 +16,17 @@ import scala.concurrent.duration.*
 
 class RootsSuite extends CatsEffectSuite {
 
+  def withServer[A](serverResource: Resource[IO, McpServer[IO]], transport: RootsTestTransport)(
+      test: (Queue[IO, Option[JsonRpcResponse]], Queue[IO, Option[JsonRpcRequest]]) => IO[A]
+  ): IO[A] =
+    (for {
+      server <- serverResource
+      _ <- server.serve(transport)
+    } yield ()).use(_ => test(transport.serverToClient, transport.clientToServer))
+
   class RootsTestTransport(
-      serverToClient: Queue[IO, Option[JsonRpcResponse]],
-      clientToServer: Queue[IO, Option[JsonRpcRequest]],
+      val serverToClient: Queue[IO, Option[JsonRpcResponse]],
+      val clientToServer: Queue[IO, Option[JsonRpcRequest]],
       rootsToReturn: Ref[IO, List[Root]],
       rootsRequests: Ref[IO, Int]
   ) extends Transport[IO] {
@@ -103,42 +112,38 @@ class RootsSuite extends CatsEffectSuite {
     val testRoots = List(Root(uri = "file:///home/user/project", name = Some("My Project")))
 
     RootsTestTransport.create(testRoots).flatMap { case (transport, serverToClient, clientToServer, _) =>
-      McpServer[IO](
+      val serverResource = McpServer[IO](
         info = Implementation("test-server", "1.0.0"),
         tools = List(EchoTool[IO])
-      ).use { server =>
-        server.serve(transport).start.flatMap { fiber =>
-          for {
-            _ <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequestWithRoots.asJsonObject))
-            _ <- clientToServer.offer(Some(initializedNotification))
-            _ <- IO.sleep(50.millis)
-            requestCount <- transport.getRootsRequestCount
-            _ = assertEquals(requestCount, 1, "Server should have called roots/list once after initialization")
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-        }
+      )
+
+      withServer(serverResource, transport) { (serverToClient, clientToServer) =>
+        for {
+          _ <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequestWithRoots.asJsonObject))
+          _ <- clientToServer.offer(Some(initializedNotification))
+          _ <- IO.sleep(50.millis)
+          requestCount <- transport.getRootsRequestCount
+          _ = assertEquals(requestCount, 1, "Server should have called roots/list once after initialization")
+        } yield ()
       }
     }
   }
 
   test("roots are NOT fetched when client does not advertise capability") {
     RootsTestTransport.create().flatMap { case (transport, serverToClient, clientToServer, _) =>
-      McpServer[IO](
+      val serverResource = McpServer[IO](
         info = Implementation("test-server", "1.0.0"),
         tools = List(EchoTool[IO])
-      ).use { server =>
-        server.serve(transport).start.flatMap { fiber =>
-          for {
-            _ <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequestWithoutRoots.asJsonObject))
-            _ <- clientToServer.offer(Some(initializedNotification))
-            _ <- IO.sleep(50.millis)
-            requestCount <- transport.getRootsRequestCount
-            _ = assertEquals(requestCount, 0, "Server should NOT call roots/list when client doesn't advertise capability")
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-        }
+      )
+
+      withServer(serverResource, transport) { (serverToClient, clientToServer) =>
+        for {
+          _ <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequestWithoutRoots.asJsonObject))
+          _ <- clientToServer.offer(Some(initializedNotification))
+          _ <- IO.sleep(50.millis)
+          requestCount <- transport.getRootsRequestCount
+          _ = assertEquals(requestCount, 0, "Server should NOT call roots/list when client doesn't advertise capability")
+        } yield ()
       }
     }
   }
@@ -147,29 +152,26 @@ class RootsSuite extends CatsEffectSuite {
     val initialRoots = List(Root(uri = "file:///project1", name = Some("Project 1")))
 
     RootsTestTransport.create(initialRoots).flatMap { case (transport, serverToClient, clientToServer, rootsRef) =>
-      McpServer[IO](
+      val serverResource = McpServer[IO](
         info = Implementation("test-server", "1.0.0"),
         tools = List(EchoTool[IO])
-      ).use { server =>
-        server.serve(transport).start.flatMap { fiber =>
-          for {
-            _ <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequestWithRoots.asJsonObject))
-            _ <- clientToServer.offer(Some(initializedNotification))
-            _ <- IO.sleep(50.millis)
-            count1 <- transport.getRootsRequestCount
-            _ = assertEquals(count1, 1, "Should have fetched roots once after init")
+      )
 
-            // Update roots and send notification
-            _ <- rootsRef.set(List(Root(uri = "file:///project2", name = Some("Project 2"))))
-            _ <- clientToServer.offer(Some(rootsListChangedNotification))
-            _ <- IO.sleep(50.millis)
-            count2 <- transport.getRootsRequestCount
-            _ = assertEquals(count2, 2, "Should have fetched roots again after list_changed")
+      withServer(serverResource, transport) { (serverToClient, clientToServer) =>
+        for {
+          _ <- sendRequest(clientToServer, serverToClient, "initialize", Some(initRequestWithRoots.asJsonObject))
+          _ <- clientToServer.offer(Some(initializedNotification))
+          _ <- IO.sleep(50.millis)
+          count1 <- transport.getRootsRequestCount
+          _ = assertEquals(count1, 1, "Should have fetched roots once after init")
 
-            _ <- clientToServer.offer(None)
-            _ <- fiber.join
-          } yield ()
-        }
+          // Update roots and send notification
+          _ <- rootsRef.set(List(Root(uri = "file:///project2", name = Some("Project 2"))))
+          _ <- clientToServer.offer(Some(rootsListChangedNotification))
+          _ <- IO.sleep(50.millis)
+          count2 <- transport.getRootsRequestCount
+          _ = assertEquals(count2, 2, "Should have fetched roots again after list_changed")
+        } yield ()
       }
     }
   }
