@@ -53,8 +53,9 @@ projects:
       - org.scalameta::munit:1.1.0
       - org.typelevel::munit-cats-effect:2.0.0
 
-  examples:
+  example-server-reference:
     extends: template-main
+    folder: ./example-servers/reference
     dependsOn:
       - server
       - server-http4s
@@ -64,14 +65,23 @@ projects:
     platform:
       mainClass: examples.SimpleServer
 
-  examples-test:
+  example-server-reference-test:
     extends: template-test
-    dependsOn: examples
+    folder: ./example-servers/reference-test
+    dependsOn: example-server-reference
     dependencies:
       - org.scalameta::munit:1.1.0
       - org.typelevel::munit-cats-effect:2.0.0
       - org.http4s::http4s-ember-server:0.23.27
       - org.http4s::http4s-ember-client:0.23.27
+
+  example-server-mcp-everything:
+    extends: template-main
+    folder: ./example-servers/mcp-everything
+    dependsOn:
+      - server
+    platform:
+      mainClass: everything.EverythingServer
 
 scripts:
   publish-locally:
