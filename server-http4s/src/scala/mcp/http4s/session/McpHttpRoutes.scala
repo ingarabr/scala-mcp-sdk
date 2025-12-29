@@ -31,13 +31,18 @@ case class RequestHeaders(
     accept: List[String]
 )
 
-/** HTTP routes for MCP protocol over HTTP/SSE.
+/** HTTP routes for MCP protocol using Streamable HTTP transport.
   *
   * Implements the MCP 2025-11-25 spec with:
-  *   - Single /mcp endpoint for all operations
   *   - Session management via Mcp-Session-Id header
   *   - Protocol version validation
   *   - SSE reconnection support
+  *
+  * Routes match at Root. Use http4s Router to mount at a custom path:
+  * {{{
+  * val mcpRoutes = McpHttpRoutes.routes[IO](server, sessionManager, true)
+  * val app = Router("/mcp" -> mcpRoutes).orNotFound
+  * }}}
   */
 object McpHttpRoutes {
 
@@ -50,7 +55,7 @@ object McpHttpRoutes {
     * @param enableSessions
     *   If true, uses session-based mode (multi-client). If false, sessionless mode (single client).
     * @return
-    *   HTTP routes to mount in http4s server
+    *   HTTP routes to mount via Router
     */
   def routes[F[_]: Async](
       server: McpServer[F],
@@ -63,7 +68,7 @@ object McpHttpRoutes {
 
     HttpRoutes.of[F] {
 
-      case req @ POST -> Root / "mcp" =>
+      case req @ POST -> Root =>
         extractHeaders(req) match {
           case Left(error) =>
             jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
@@ -94,7 +99,7 @@ object McpHttpRoutes {
 
         }
 
-      case req @ GET -> Root / "mcp" =>
+      case req @ GET -> Root =>
         extractHeaders(req) match {
           case Left(error) =>
             jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
@@ -128,7 +133,7 @@ object McpHttpRoutes {
             }
         }
 
-      case req @ DELETE -> Root / "mcp" =>
+      case req @ DELETE -> Root =>
         extractHeaders(req) match {
           case Left(error) =>
             jsonRpcError[F](None, Constants.INVALID_REQUEST, error)

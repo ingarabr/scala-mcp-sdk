@@ -10,6 +10,8 @@ import org.http4s.server.middleware.CORS
 import examples.tools.{AddTool, EchoTool, LogAndProgressTool}
 import examples.resources.{FileTemplateResource, ServerConfigResource, TimestampResource}
 import examples.prompts.GreetingPrompt
+import org.http4s.HttpRoutes
+import org.http4s.server.Router
 
 import scala.concurrent.duration.*
 
@@ -32,11 +34,14 @@ object HttpServer extends IOApp {
         idleTimeout = 30.minutes, // Remove sessions idle for 30 minutes
         checkInterval = 5.minutes // Check every 5 minutes
       ).use { sessionManager =>
-        val routes = McpHttpRoutes.routes[IO](
+        val mcpRoutes = McpHttpRoutes.routes[IO](
           server = mcpServer,
           sessionManager = sessionManager,
           enableSessions = true
         )
+
+        // Mount at /mcp - change this to customize the endpoint path
+        val routes = Router("/mcp" -> mcpRoutes)
 
         val corsConfig = CORS.policy.withAllowOriginAll.withAllowMethodsAll.withAllowHeadersAll
 

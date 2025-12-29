@@ -59,7 +59,7 @@ class HttpIntegrationTest extends CatsEffectSuite {
   test("Full MCP Inspector flow: initialize -> tools/list -> tools/call") {
     startTestServer(port"0").use { server =>
       EmberClientBuilder.default[IO].build.use { client =>
-        val baseUri = Uri.unsafeFromString(s"http://127.0.0.1:${server.address.getPort}/mcp")
+        val baseUri = Uri.unsafeFromString(s"http://127.0.0.1:${server.address.getPort}")
 
         // Step 1: Initialize
         val initRequest = Request[IO](Method.POST, baseUri)
