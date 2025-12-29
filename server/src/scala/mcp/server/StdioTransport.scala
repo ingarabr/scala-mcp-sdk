@@ -12,9 +12,6 @@ import io.circe.parser.*
 import io.circe.syntax.*
 import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse, RequestId}
 
-import java.util.UUID
-import scala.concurrent.duration.*
-
 /** Transport implementation using standard input/output.
   *
   * Reads newline-delimited JSON from stdin and writes to stdout. Standard transport for command-line MCP servers.

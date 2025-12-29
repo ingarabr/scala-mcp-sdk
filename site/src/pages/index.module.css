@@ -1,0 +1,83 @@
+.heroBanner {
+  padding: 4rem 0;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #4c1d95 0%, #7c3aed 100%);
+  color: white;
+}
+
+.heroBanner h1 {
+  color: white;
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.buttons .button--primary {
+  background-color: white;
+  color: #7c3aed;
+  border: none;
+}
+
+.buttons .button--primary:hover {
+  background-color: #f3f4f6;
+  color: #6d28d9;
+}
+
+.buttons .button--secondary {
+  background-color: transparent;
+  color: white;
+  border: 2px solid white;
+}
+
+.buttons .button--secondary:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.features {
+  display: flex;
+  align-items: center;
+  padding: 2rem 0;
+  width: 100%;
+  background-color: var(--ifm-background-surface-color);
+}
+
+.features h3 {
+  color: var(--ifm-color-primary);
+}
+
+.example {
+  padding: 2rem 0 4rem;
+  background-color: var(--ifm-background-color);
+}
+
+.example h2 {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.codeBlock {
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  padding: 1.5rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+[data-theme='dark'] .features {
+  background-color: var(--ifm-background-color);
+}
+
+[data-theme='dark'] .example {
+  background-color: var(--ifm-background-surface-color);
+}

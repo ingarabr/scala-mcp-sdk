@@ -6,3 +6,14 @@ target/
 .bloop/
 .bleep/
 .idea/
+
+docs-site/
+site/docs/
+site/node_modules/
+site/.docusaurus/
+site/build/
+
+# Misc
+.DS_Store
+*.log
+npm-debug.log*

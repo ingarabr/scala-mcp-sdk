@@ -5,12 +5,8 @@ import cats.effect.std.Queue
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.JsonObject
-import io.circe.syntax.*
-import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse, RequestId}
+import mcp.protocol.{ErrorData, JsonRpcRequest, JsonRpcResponse, RequestId}
 import mcp.server.Transport
-
-import java.util.UUID
-import scala.concurrent.duration.*
 
 /** HTTP session-aware transport implementation.
   *
