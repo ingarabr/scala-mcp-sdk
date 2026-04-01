@@ -147,5 +147,16 @@ import mcp.server.McpServer
 // )
 ```
 
+## Dynamic Prompts
+
+Prompts can be added or removed after the server has started:
+
+```scala
+server.addPrompts(List(myNewPrompt))
+server.removePrompts(List("old-prompt"))
+```
+
+The server automatically notifies connected clients. See [Dynamic Primitives](../advanced/dynamic-primitives.md) for details.
+
 See the [MCP specification](https://modelcontextprotocol.io/docs/concepts/prompts#embedded-resource-context) for more on
 embedded resources.

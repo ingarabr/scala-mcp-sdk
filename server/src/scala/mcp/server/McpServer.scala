@@ -1,6 +1,7 @@
 package mcp.server
 
 import cats.effect.{Async, Fiber, Ref, Resource as CatsResource}
+import cats.effect.std.Queue
 import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
@@ -92,6 +93,36 @@ trait McpServer[F[_]] {
     * Sends notification to all connected clients. Use when prompts are added, removed, or their metadata changes.
     */
   def notifyPromptListChanged(): F[Unit]
+
+  /** Add tools dynamically. Notifies connected clients of the change. */
+  def addTools(tools: List[ToolDef[F, _, _]]): F[Unit]
+
+  /** Remove tools by name. Notifies connected clients of the change. */
+  def removeTools(names: List[String]): F[Unit]
+
+  /** Add resources dynamically. Notifies connected clients of the change. */
+  def addResources(resources: List[ResourceDef[F, _]]): F[Unit]
+
+  /** Remove resources by URI. Notifies connected clients of the change. */
+  def removeResources(uris: List[String]): F[Unit]
+
+  /** Add resource templates dynamically. Notifies connected clients of the change. */
+  def addResourceTemplates(templates: List[ResourceTemplateDef[F]]): F[Unit]
+
+  /** Remove resource templates by URI template. Notifies connected clients of the change. */
+  def removeResourceTemplates(uriTemplates: List[String]): F[Unit]
+
+  /** Add prompts dynamically. Notifies connected clients of the change. */
+  def addPrompts(prompts: List[PromptDef[F, _]]): F[Unit]
+
+  /** Remove prompts by name. Notifies connected clients of the change. */
+  def removePrompts(names: List[String]): F[Unit]
+
+  /** Add completion providers dynamically. */
+  def addCompletions(completions: List[CompletionDef[F]]): F[Unit]
+
+  /** Remove completion providers by reference. */
+  def removeCompletions(refs: List[CompletionReference]): F[Unit]
 }
 object McpServer {
 
@@ -141,17 +172,24 @@ object McpServer {
   ): CatsResource[F, McpServer[F]] =
     CatsResource.eval {
       for {
+        toolsRef <- Ref.of[F, Map[String, ToolDef[F, _, _]]](tools.map(t => t.name -> t).toMap)
+        resourcesRef <- Ref.of[F, Map[String, ResourceDef[F, _]]](resources.map(r => r.uri -> r).toMap)
+        resourceTemplatesRef <- Ref.of[F, List[ResourceTemplateDef[F]]](resourceTemplates)
+        promptsRef <- Ref.of[F, Map[String, PromptDef[F, _]]](prompts.map(p => p.name -> p).toMap)
+        completionsRef <- Ref.of[F, List[CompletionDef[F]]](completions)
+        resourceUpdateQueue <- Queue.unbounded[F, ResourceUri]
         connectionState <- Ref.of[F, ConnectionState](ConnectionState.Uninitialized)
         activeTransport <- Ref.of[F, Option[Transport[F]]](None)
         inFlightRequests <- Ref.of[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]](Map.empty)
         taskRegistry <- if tasksEnabled then TaskRegistry[F](taskConfig).map(Some(_)) else Async[F].pure(None)
       } yield new McpServerImpl[F](
         serverInfo = info,
-        toolsMap = tools.map(t => t.name -> t).toMap,
-        resourcesMap = resources.map(r => r.uri -> r).toMap,
-        resourceTemplates = resourceTemplates,
-        promptsMap = prompts.map(p => p.name -> p).toMap,
-        completionProviders = completions,
+        toolsRef = toolsRef,
+        resourcesRef = resourcesRef,
+        resourceTemplatesRef = resourceTemplatesRef,
+        promptsRef = promptsRef,
+        completionsRef = completionsRef,
+        resourceUpdateQueue = resourceUpdateQueue,
         paginationConfig = paginationConfig,
         connectionState = connectionState,
         activeTransport = activeTransport,
@@ -172,11 +210,12 @@ object McpServer {
   */
 private class McpServerImpl[F[_]: Async](
     val serverInfo: Implementation,
-    toolsMap: Map[String, ToolDef[F, _, _]],
-    resourcesMap: Map[String, ResourceDef[F, _]],
-    resourceTemplates: List[ResourceTemplateDef[F]],
-    promptsMap: Map[String, PromptDef[F, _]],
-    completionProviders: List[CompletionDef[F]],
+    toolsRef: Ref[F, Map[String, ToolDef[F, _, _]]],
+    resourcesRef: Ref[F, Map[String, ResourceDef[F, _]]],
+    resourceTemplatesRef: Ref[F, List[ResourceTemplateDef[F]]],
+    promptsRef: Ref[F, Map[String, PromptDef[F, _]]],
+    completionsRef: Ref[F, List[CompletionDef[F]]],
+    resourceUpdateQueue: Queue[F, ResourceUri],
     paginationConfig: PaginationConfig,
     connectionState: Ref[F, ConnectionState],
     activeTransport: Ref[F, Option[Transport[F]]],
@@ -186,28 +225,15 @@ private class McpServerImpl[F[_]: Async](
     shutdownTimeout: FiniteDuration
 ) extends McpServer[F] {
 
-  /** Merged stream of all resource updates from resources and templates. */
-  private val resourceUpdates: fs2.Stream[F, ResourceUri] = {
-    // Static resources: map Unit emissions to their URI
-    val staticUpdates = resourcesMap.values.toList.map { r =>
-      r.updates.as(ResourceUri(r.uri))
-    }
-    // Template resources: already emit ResourceUri
-    val templateUpdates = resourceTemplates.map(_.updates)
-
-    // Merge all streams
-    fs2.Stream.emits(staticUpdates ++ templateUpdates).parJoinUnbounded
-  }
-
   def info: Implementation = serverInfo
 
-  def capabilities: ServerCapabilities = {
-    val hasResources = resourcesMap.nonEmpty || resourceTemplates.nonEmpty
+  /** Always declare all capabilities with listChanged since primitives can be added dynamically. */
+  def capabilities: ServerCapabilities =
     ServerCapabilities(
-      tools = if toolsMap.nonEmpty then Some(ToolsCapability(listChanged = Some(true))) else None,
-      resources = if hasResources then Some(ResourcesCapability(subscribe = Some(true), listChanged = Some(true))) else None,
-      prompts = if promptsMap.nonEmpty then Some(PromptsCapability(listChanged = Some(true))) else None,
-      completions = if completionProviders.nonEmpty then Some(JsonObject.empty) else None,
+      tools = Some(ToolsCapability(listChanged = Some(true))),
+      resources = Some(ResourcesCapability(subscribe = Some(true), listChanged = Some(true))),
+      prompts = Some(PromptsCapability(listChanged = Some(true))),
+      completions = Some(JsonObject.empty),
       tasks = taskRegistry.map(_ =>
         TasksCapability(
           list = Some(JsonObject.empty),
@@ -216,7 +242,24 @@ private class McpServerImpl[F[_]: Async](
         )
       )
     )
-  }
+
+  /** Start resource update stream piping into the central queue. */
+  private def startResourceUpdateStreams: F[Unit] =
+    for {
+      resources <- resourcesRef.get
+      templates <- resourceTemplatesRef.get
+      staticStreams = resources.values.toList.map(r => r.updates.as(ResourceUri(r.uri)))
+      templateStreams = templates.map(_.updates)
+      allStreams = staticStreams ++ templateStreams
+      _ <-
+        if allStreams.nonEmpty then
+          Async[F]
+            .start(
+              fs2.Stream.emits(allStreams).parJoinUnbounded.evalMap(resourceUpdateQueue.offer).compile.drain
+            )
+            .void
+        else Async[F].unit
+    } yield ()
 
   def serve(transport: Transport[F]): CatsResource[F, Unit] = {
     // Main message handling stream
@@ -225,16 +268,17 @@ private class McpServerImpl[F[_]: Async](
       .collect { case Some(msg) => msg }
       .foreach(response => transport.send(response))
 
-    // Resource updates stream - sends notifications for subscribed URIs
-    val updatesStream = resourceUpdates.evalMap(notifyResourceUpdated)
+    // Resource updates stream — reads from the central queue
+    val updatesStream = fs2.Stream.fromQueueUnterminated(resourceUpdateQueue).evalMap(notifyResourceUpdated)
 
     // Combined stream that processes messages and handles resource updates
     val combinedStream = messageStream.concurrently(updatesStream)
 
     CatsResource
       .make(
-        // Acquire: set transport and start message processing in background
+        // Acquire: set transport, start resource update streams, start message processing
         activeTransport.set(Some(transport)) *>
+          startResourceUpdateStreams *>
           Async[F].start(combinedStream.compile.drain).map(_.cancel)
       ) { cancelStream =>
         // Release: graceful shutdown
@@ -519,19 +563,16 @@ private class McpServerImpl[F[_]: Async](
     }
   }
 
-  private def handleListTools(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
-    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
-    val allTools = toolsList
-    Paginator.paginate(allTools, cursor, paginationConfig, _.name) match {
-      case Left(error)      => Async[F].pure(Left(error))
-      case Right(paginated) =>
-        val result = ListToolsResult(tools = paginated.items, nextCursor = paginated.nextCursor)
-        Async[F].pure(Right(result.asJsonObject))
+  private def handleListTools(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] =
+    toolsRef.get.map { toolsMap =>
+      val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+      val allTools = toolsMap.values.map(_.toTool).toList
+      Paginator.paginate(allTools, cursor, paginationConfig, _.name) match {
+        case Left(error)      => Left(error)
+        case Right(paginated) =>
+          Right(ListToolsResult(tools = paginated.items, nextCursor = paginated.nextCursor).asJsonObject)
+      }
     }
-  }
-
-  // Pre-computed list for stable pagination hash
-  private lazy val toolsList: List[Tool] = toolsMap.values.map(_.toTool).toList
 
   private def handleCallTool(
       params: Option[JsonObject],
@@ -551,7 +592,7 @@ private class McpServerImpl[F[_]: Async](
     val taskParamOpt: Option[TaskParam] = paramsObj("task")
       .flatMap(_.as[TaskParam].toOption)
 
-    connectionState.get.flatMap { state =>
+    (connectionState.get, toolsRef.get).flatMapN { (state, toolsMap) =>
       val context = ToolContextImpl[F](transport, progressToken, state.minLogLevel, state.rootsList, capabilities, useTasksForOutgoing)
 
       paramsJson.as[CallToolRequest] match {
@@ -599,33 +640,27 @@ private class McpServerImpl[F[_]: Async](
       _ <- registry.registerFiber(task.taskId, fiber)
     } yield Right(CreateTaskResult(task = task).asJsonObject)
 
-  private def handleListResources(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
-    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
-    val allResources = resourcesList
-    Paginator.paginate(allResources, cursor, paginationConfig, _.uri) match {
-      case Left(error)      => Async[F].pure(Left(error))
-      case Right(paginated) =>
-        val result = ListResourcesResult(resources = paginated.items, nextCursor = paginated.nextCursor)
-        Async[F].pure(Right(result.asJsonObject))
+  private def handleListResources(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] =
+    resourcesRef.get.map { resourcesMap =>
+      val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+      val allResources = resourcesMap.values.map(_.toResource).toList
+      Paginator.paginate(allResources, cursor, paginationConfig, _.uri) match {
+        case Left(error)      => Left(error)
+        case Right(paginated) =>
+          Right(ListResourcesResult(resources = paginated.items, nextCursor = paginated.nextCursor).asJsonObject)
+      }
     }
-  }
 
-  // Pre-computed list for stable pagination hash
-  private lazy val resourcesList: List[Resource] = resourcesMap.values.map(_.toResource).toList
-
-  private def handleListResourceTemplates(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
-    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
-    val allTemplates = resourceTemplatesList
-    Paginator.paginate(allTemplates, cursor, paginationConfig, _.uriTemplate) match {
-      case Left(error)      => Async[F].pure(Left(error))
-      case Right(paginated) =>
-        val result = ListResourceTemplatesResult(resourceTemplates = paginated.items, nextCursor = paginated.nextCursor)
-        Async[F].pure(Right(result.asJsonObject))
+  private def handleListResourceTemplates(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] =
+    resourceTemplatesRef.get.map { templates =>
+      val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+      val allTemplates = templates.map(_.toResourceTemplate)
+      Paginator.paginate(allTemplates, cursor, paginationConfig, _.uriTemplate) match {
+        case Left(error)      => Left(error)
+        case Right(paginated) =>
+          Right(ListResourceTemplatesResult(resourceTemplates = paginated.items, nextCursor = paginated.nextCursor).asJsonObject)
+      }
     }
-  }
-
-  // Pre-computed list for stable pagination hash
-  private lazy val resourceTemplatesList: List[ResourceTemplate] = resourceTemplates.map(_.toResourceTemplate)
 
   private def handleReadResource(
       params: Option[JsonObject],
@@ -636,16 +671,17 @@ private class McpServerImpl[F[_]: Async](
     paramsJson.as[ReadResourceRequest] match {
       case Right(request) =>
         // First check static resources (exact match)
-        resourcesMap.get(request.uri) match {
-          case Some(resourceDef) =>
-            // Get minimum log level and roots from connection state
-            connectionState.get.flatMap { state =>
-              val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
-              resourceDef.read(context).map(result => Right(result.asJsonObject))
-            }
-          case None =>
-            // No static match - try templates
-            resolveFromTemplates(request.uri, transport)
+        resourcesRef.get.flatMap { resourcesMap =>
+          resourcesMap.get(request.uri) match {
+            case Some(resourceDef) =>
+              connectionState.get.flatMap { state =>
+                val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
+                resourceDef.read(context).map(result => Right(result.asJsonObject))
+              }
+            case None =>
+              // No static match - try templates
+              resolveFromTemplates(request.uri, transport)
+          }
         }
 
       case Left(error) =>
@@ -658,10 +694,9 @@ private class McpServerImpl[F[_]: Async](
     * Templates are checked in order; the first matching template that resolves to a ResourceDef is used.
     */
   private def resolveFromTemplates(uri: String, transport: Transport[F]): F[Either[ErrorData, JsonObject]] =
-    connectionState.get.flatMap { state =>
+    (connectionState.get, resourceTemplatesRef.get).flatMapN { (state, templates) =>
       val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
 
-      // Find first matching template and try to resolve
       def tryTemplates(remaining: List[ResourceTemplateDef[F]]): F[Either[ErrorData, JsonObject]] =
         remaining match {
           case Nil =>
@@ -672,7 +707,6 @@ private class McpServerImpl[F[_]: Async](
                 case Some(resourceDef) =>
                   resourceDef.read(context).map(result => Right(result.asJsonObject))
                 case None =>
-                  // Template matched but resolver returned None, try next template
                   tryTemplates(rest)
               }
             } else {
@@ -680,34 +714,32 @@ private class McpServerImpl[F[_]: Async](
             }
         }
 
-      tryTemplates(resourceTemplates)
+      tryTemplates(templates)
     }
 
   private def validateResourceExists(uri: ResourceUri, transport: Transport[F]): F[Boolean] =
-    // First check static resources
-    if resourcesMap.contains(uri.value) then {
-      Async[F].pure(true)
-    } else {
-      // Try templates with full resolution
-      connectionState.get.flatMap { state =>
-        val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
+    resourcesRef.get.flatMap { resourcesMap =>
+      if resourcesMap.contains(uri.value) then Async[F].pure(true)
+      else
+        (connectionState.get, resourceTemplatesRef.get).flatMapN { (state, templates) =>
+          val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
 
-        def tryTemplates(remaining: List[ResourceTemplateDef[F]]): F[Boolean] =
-          remaining match {
-            case Nil              => Async[F].pure(false)
-            case template :: rest =>
-              if template.matches(uri.value) then {
-                template.resolve(uri.value, context).flatMap {
-                  case Some(_) => Async[F].pure(true)
-                  case None    => tryTemplates(rest)
+          def tryTemplates(remaining: List[ResourceTemplateDef[F]]): F[Boolean] =
+            remaining match {
+              case Nil              => Async[F].pure(false)
+              case template :: rest =>
+                if template.matches(uri.value) then {
+                  template.resolve(uri.value, context).flatMap {
+                    case Some(_) => Async[F].pure(true)
+                    case None    => tryTemplates(rest)
+                  }
+                } else {
+                  tryTemplates(rest)
                 }
-              } else {
-                tryTemplates(rest)
-              }
-          }
+            }
 
-        tryTemplates(resourceTemplates)
-      }
+          tryTemplates(templates)
+        }
     }
 
   private def handleSubscribe(
@@ -768,29 +800,28 @@ private class McpServerImpl[F[_]: Async](
       case other => other
     }
 
-  private def handleListPrompts(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
-    val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
-    val allPrompts = promptsList
-    Paginator.paginate(allPrompts, cursor, paginationConfig, _.name) match {
-      case Left(error)      => Async[F].pure(Left(error))
-      case Right(paginated) =>
-        val result = ListPromptsResult(prompts = paginated.items, nextCursor = paginated.nextCursor)
-        Async[F].pure(Right(result.asJsonObject))
+  private def handleListPrompts(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] =
+    promptsRef.get.map { promptsMap =>
+      val cursor = params.flatMap(_("cursor")).flatMap(_.asString)
+      val allPrompts = promptsMap.values.map(_.toPrompt).toList
+      Paginator.paginate(allPrompts, cursor, paginationConfig, _.name) match {
+        case Left(error)      => Left(error)
+        case Right(paginated) =>
+          Right(ListPromptsResult(prompts = paginated.items, nextCursor = paginated.nextCursor).asJsonObject)
+      }
     }
-  }
-
-  // Pre-computed list for stable pagination hash
-  private lazy val promptsList: List[Prompt] = promptsMap.values.map(_.toPrompt).toList
 
   private def handleGetPrompt(params: Option[JsonObject], capabilities: ClientCapabilities): F[Either[ErrorData, JsonObject]] = {
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[GetPromptRequest] match {
       case Right(request) =>
-        promptsMap.get(request.name) match {
-          case Some(promptDef) =>
-            promptDef.get(request.arguments).map(result => Right(result.asJsonObject))
-          case None =>
-            ErrorData(code = Constants.INVALID_PARAMS, message = s"Prompt not found: ${request.name}").asError
+        promptsRef.get.flatMap { promptsMap =>
+          promptsMap.get(request.name) match {
+            case Some(promptDef) =>
+              promptDef.get(request.arguments).map(result => Right(result.asJsonObject))
+            case None =>
+              ErrorData(code = Constants.INVALID_PARAMS, message = s"Prompt not found: ${request.name}").asError
+          }
         }
 
       case Left(error) =>
@@ -802,12 +833,13 @@ private class McpServerImpl[F[_]: Async](
     val paramsJson = params.getOrElse(JsonObject.empty).asJson
     paramsJson.as[CompleteRequest] match {
       case Right(request) =>
-        findCompletionProvider(request.ref) match {
-          case Some(provider) =>
-            provider.complete(request.argument).map(result => Right(result.asJsonObject))
-          case None =>
-            // No provider found - return empty completions (not an error per MCP spec)
-            Async[F].pure(Right(CompleteResult(completion = CompletionCompletion(values = Nil)).asJsonObject))
+        completionsRef.get.flatMap { completions =>
+          findCompletionProvider(completions, request.ref) match {
+            case Some(provider) =>
+              provider.complete(request.argument).map(result => Right(result.asJsonObject))
+            case None =>
+              Async[F].pure(Right(CompleteResult(completion = CompletionCompletion(values = Nil)).asJsonObject))
+          }
         }
 
       case Left(error) =>
@@ -815,14 +847,8 @@ private class McpServerImpl[F[_]: Async](
     }
   }
 
-  /** Find a completion provider matching the given reference.
-    *
-    * Matches by:
-    *   - For prompts: exact name match
-    *   - For resource templates: exact URI template match
-    */
-  private def findCompletionProvider(ref: CompletionReference): Option[CompletionDef[F]] =
-    completionProviders.find { provider =>
+  private def findCompletionProvider(completions: List[CompletionDef[F]], ref: CompletionReference): Option[CompletionDef[F]] =
+    completions.find { provider =>
       (provider.ref, ref) match {
         case (CompletionReference.Prompt(name1, _), CompletionReference.Prompt(name2, _)) =>
           name1 == name2
@@ -972,6 +998,61 @@ private class McpServerImpl[F[_]: Async](
       case None =>
         Async[F].unit
     }
+
+  // ============================================================================
+  // DYNAMIC ADD/REMOVE
+  // ============================================================================
+
+  def addTools(tools: List[ToolDef[F, _, _]]): F[Unit] =
+    toolsRef.update(m => m ++ tools.map(t => t.name -> t)) *> notifyToolListChanged()
+
+  def removeTools(names: List[String]): F[Unit] =
+    toolsRef.update(m => m -- names) *> notifyToolListChanged()
+
+  def addResources(resources: List[ResourceDef[F, _]]): F[Unit] =
+    resourcesRef.update(m => m ++ resources.map(r => r.uri -> r)) *>
+      startResourceUpdateStreamsFor(resources) *>
+      notifyResourceListChanged()
+
+  def removeResources(uris: List[String]): F[Unit] =
+    resourcesRef.update(m => m -- uris) *> notifyResourceListChanged()
+
+  def addResourceTemplates(templates: List[ResourceTemplateDef[F]]): F[Unit] =
+    resourceTemplatesRef.update(_ ++ templates) *>
+      startTemplateUpdateStreamsFor(templates) *>
+      notifyResourceListChanged()
+
+  def removeResourceTemplates(uriTemplates: List[String]): F[Unit] =
+    resourceTemplatesRef.update(ts => ts.filterNot(t => uriTemplates.contains(t.uriTemplate))) *>
+      notifyResourceListChanged()
+
+  def addPrompts(prompts: List[PromptDef[F, _]]): F[Unit] =
+    promptsRef.update(m => m ++ prompts.map(p => p.name -> p)) *> notifyPromptListChanged()
+
+  def removePrompts(names: List[String]): F[Unit] =
+    promptsRef.update(m => m -- names) *> notifyPromptListChanged()
+
+  def addCompletions(completions: List[CompletionDef[F]]): F[Unit] =
+    completionsRef.update(_ ++ completions)
+
+  def removeCompletions(refs: List[CompletionReference]): F[Unit] =
+    completionsRef.update(cs => cs.filterNot(c => refs.contains(c.ref)))
+
+  /** Start update stream piping for newly added resources. */
+  private def startResourceUpdateStreamsFor(resources: List[ResourceDef[F, _]]): F[Unit] = {
+    val streams = resources.map(r => r.updates.as(ResourceUri(r.uri)))
+    if streams.nonEmpty then
+      Async[F].start(fs2.Stream.emits(streams).parJoinUnbounded.evalMap(resourceUpdateQueue.offer).compile.drain).void
+    else Async[F].unit
+  }
+
+  /** Start update stream piping for newly added resource templates. */
+  private def startTemplateUpdateStreamsFor(templates: List[ResourceTemplateDef[F]]): F[Unit] = {
+    val streams = templates.map(_.updates)
+    if streams.nonEmpty then
+      Async[F].start(fs2.Stream.emits(streams).parJoinUnbounded.evalMap(resourceUpdateQueue.offer).compile.drain).void
+    else Async[F].unit
+  }
 }
 
 extension (ed: ErrorData) {

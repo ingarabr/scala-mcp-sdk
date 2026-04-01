@@ -110,6 +110,19 @@ ResourceDef[F, Array[Byte]](
 )
 ```
 
+## Dynamic Resources
+
+Resources and resource templates can be added or removed after the server has started:
+
+```scala
+server.addResources(List(myNewResource))
+server.removeResources(List("file:///old-resource"))
+server.addResourceTemplates(List(myTemplate))
+server.removeResourceTemplates(List("file:///{path}"))
+```
+
+The server automatically notifies connected clients. See [Dynamic Primitives](../advanced/dynamic-primitives.md) for details.
+
 ## Security Considerations
 
 As noted in the MCP specification:

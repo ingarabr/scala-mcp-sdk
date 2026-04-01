@@ -216,6 +216,17 @@ val divideTool = ToolDef.unstructured[IO, DivideInput](
 }
 ```
 
+## Dynamic Tools
+
+Tools can be added or removed after the server has started:
+
+```scala
+server.addTools(List(myNewTool))
+server.removeTools(List("old-tool"))
+```
+
+The server automatically notifies connected clients. See [Dynamic Primitives](../advanced/dynamic-primitives.md) for details.
+
 ## Security Considerations
 
 As noted in the MCP specification:

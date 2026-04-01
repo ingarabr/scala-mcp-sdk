@@ -1,7 +1,7 @@
 $schema: https://raw.githubusercontent.com/oyvindberg/bleep/master/schema.json
-$version: 0.0.12
+$version: 1.0.0-M5
 jvm:
-  name: graalvm-community:24.0.0
+  name: graalvm-community:25.0.1
 projects:
   schemas:
     extends: template-main
@@ -106,7 +106,7 @@ templates:
     platform:
       name: jvm
     scala:
-      version: 3.3.4
+      version: 3.7.3
       options:
         - -Xmax-inlines:64
         - -Wunused:all
@@ -115,7 +115,7 @@ templates:
         - -feature
         - -unchecked
         - -new-syntax
-        - -source:3.3
+        - -source:3.7
         - -no-indent
       strict: true
 
