@@ -27,11 +27,17 @@ import cats.effect.*
 import mcp.protocol.*
 import mcp.server.*
 
+type GreetInput = (name: String, formal: Option[Boolean])
+given InputDef[GreetInput] = InputDef[GreetInput](
+  name   = InputField[String]("Name to greet"),
+  formal = InputField[Option[Boolean]]("Use formal greeting")
+)
+
 object MyServer extends IOApp.Simple:
   val greetTool = ToolDef.unstructured[IO, GreetInput](
     name = "greet",
     description = Some("Greet someone")
-  ) { (input, ctx) =>
+  ) { (input, _) =>
     IO.pure(List(Content.Text(s"Hello, ${input.name}!")))
   }
 
