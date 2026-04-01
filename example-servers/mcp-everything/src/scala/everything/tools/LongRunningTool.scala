@@ -2,10 +2,8 @@ package everything.tools
 
 import cats.effect.Async
 import cats.syntax.all.*
-import io.circe.Codec
 import mcp.protocol.{Content, ToolAnnotations}
-import mcp.schema.{McpSchema, description}
-import mcp.server.ToolDef
+import mcp.server.{InputDef, InputField, ToolDef}
 
 import scala.concurrent.duration.*
 
@@ -15,14 +13,11 @@ import scala.concurrent.duration.*
   */
 object LongRunningTool {
 
-  @description("Input for long running operation")
-  case class Input(
-      @description("Duration of the operation in seconds")
-      duration: Option[Int],
-      @description("Number of steps in the operation")
-      steps: Option[Int]
-  ) derives Codec.AsObject,
-        McpSchema
+  type Input = (duration: Option[Int], steps: Option[Int])
+  given InputDef[Input] = InputDef[Input](
+    duration = InputField[Option[Int]]("Duration of the operation in seconds"),
+    steps = InputField[Option[Int]]("Number of steps in the operation")
+  )
 
   def apply[F[_]](using F: Async[F]): ToolDef[F, Input, Nothing] =
     ToolDef.unstructured[F, Input](

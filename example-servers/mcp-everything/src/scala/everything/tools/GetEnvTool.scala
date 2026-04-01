@@ -1,11 +1,10 @@
 package everything.tools
 
 import cats.effect.Async
-import io.circe.Codec
+import io.circe.Decoder
 import io.circe.syntax.*
-import mcp.protocol.{Content, ToolAnnotations}
-import mcp.schema.{McpSchema, description}
-import mcp.server.ToolDef
+import mcp.protocol.{Content, JsonSchemaType, ToolAnnotations}
+import mcp.server.{InputDef, ToolDef}
 
 /** Get environment variables tool.
   *
@@ -13,8 +12,11 @@ import mcp.server.ToolDef
   */
 object GetEnvTool {
 
-  @description("No input required")
-  case class Input() derives Codec.AsObject, McpSchema
+  case class Input() derives Decoder
+  given InputDef[Input] = InputDef.raw(
+    JsonSchemaType.ObjectSchema(),
+    summon[Decoder[Input]]
+  )
 
   def apply[F[_]: Async]: ToolDef[F, Input, Nothing] =
     ToolDef.unstructured[F, Input](

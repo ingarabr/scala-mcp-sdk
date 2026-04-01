@@ -95,16 +95,19 @@ class ToolContextImpl[F[_]: Async](
     if clientCapabilities.elicitation.isDefined then ElicitationCapability.Supported
     else ElicitationCapability.NotSupported
 
-  def elicit[T <: Tuple](message: String, fields: T): F[ElicitResult[FormFields.ExtractTypes[T]]] =
-    sendElicitRequest(ElicitRequest(ElicitMode.form, message, requestedSchema = Some(FormFields.toJsonObject(fields)))).map {
+  def elicit[A](message: String, inputDef: InputDef[A]): F[ElicitResult[A]] = {
+    import mcp.protocol.JsonSchemaType.toJsonObject
+    val schema = inputDef.jsonSchema.toJsonObject
+    sendElicitRequest(ElicitRequest(ElicitMode.form, message, requestedSchema = Some(schema))).map {
       case ElicitResult.Accepted(json) =>
-        FormFields.extractAll(fields, json) match {
+        inputDef.extract(json) match {
           case Right(value) => ElicitResult.Accepted(value)
           case Left(_)      => ElicitResult.Cancelled
         }
       case ElicitResult.Declined  => ElicitResult.Declined
       case ElicitResult.Cancelled => ElicitResult.Cancelled
     }
+  }
 
   def elicitUrl(message: String, targetUrl: String): F[ElicitResult[Unit]] =
     sendElicitRequest(ElicitRequest(ElicitMode.url, message, url = Some(targetUrl))).map {
@@ -339,7 +342,7 @@ object ToolContextImpl {
       def progressToken: Option[ProgressToken] = None
       def roots: Option[List[Root]] = None
       def elicitationCapability: ElicitationCapability = ElicitationCapability.NotSupported
-      def elicit[T <: Tuple](message: String, fields: T): F[ElicitResult[FormFields.ExtractTypes[T]]] =
+      def elicit[A](message: String, inputDef: InputDef[A]): F[ElicitResult[A]] =
         Async[F].pure(ElicitResult.Cancelled)
       def elicitUrl(message: String, url: String): F[ElicitResult[Unit]] = Async[F].pure(ElicitResult.Cancelled)
       def samplingCapability: SamplingCapability = SamplingCapability.NotSupported

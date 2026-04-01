@@ -17,25 +17,23 @@ Each tool has:
 |---------------|----------|---------------------------------------------|
 | `name`        | Yes      | Unique identifier                           |
 | `description` | No       | Human-readable description of functionality |
-| `inputSchema` | Auto     | JSON Schema derived from input type         |
+| `inputSchema` | Auto     | JSON Schema derived from InputDef           |
 | `annotations` | No       | Hints about tool behavior                   |
 
 ## Basic Example
 
-Define an input type with schema annotations, then create a tool:
+Define an input type with field descriptors, then create a tool:
 
 ```scala mdoc:compile-only
 import cats.effect.IO
-import io.circe.Codec
 import mcp.protocol.Content
-import mcp.server.ToolDef
-import mcp.schema.{McpSchema, description}
+import mcp.server.*
 
-@description("Input for echo operation")
-case class EchoInput(
-  @description("The message to echo back")
-  message: String
-) derives Codec.AsObject, McpSchema
+type EchoInput = (message: String, prefix: Option[String])
+given InputDef[EchoInput] = InputDef[EchoInput](
+  message = InputField[String]("The message to echo back"),
+  prefix  = InputField[Option[String]]("Optional prefix")
+)
 
 val echoTool = ToolDef.unstructured[IO, EchoInput](
   name = "echo",
@@ -60,22 +58,18 @@ import mcp.server.McpServer
 
 ## Input Schema
 
-Schemas are automatically derived from your input case class using `McpSchema`. Annotations provide descriptions:
+Schemas are defined using `InputField` descriptors and `InputDef`. The `InputDef` is resolved via `using` — define it as a `given`:
 
 ```scala mdoc:compile-only
 import cats.effect.IO
-import io.circe.Codec
 import mcp.protocol.Content
-import mcp.server.ToolDef
-import mcp.schema.{McpSchema, description}
+import mcp.server.*
 
-@description("Input for addition")
-case class AddInput(
-  @description("First number")
-  a: Double,
-  @description("Second number")
-  b: Double
-) derives Codec.AsObject, McpSchema
+type AddInput = (a: Double, b: Double)
+given InputDef[AddInput] = InputDef[AddInput](
+  a = InputField[Double]("First number"),
+  b = InputField[Double]("Second number")
+)
 
 val addTool = ToolDef.unstructured[IO, AddInput](
   name = "add",
@@ -91,12 +85,18 @@ Annotations provide hints about tool behavior to help clients build appropriate 
 
 ```scala mdoc:compile-only
 import cats.effect.IO
-import io.circe.Codec
-import mcp.protocol.{Content, ToolAnnotations}
-import mcp.server.ToolDef
-import mcp.schema.McpSchema
+import io.circe.Decoder
+import mcp.protocol.{Content, JsonSchemaType, ToolAnnotations}
+import mcp.server.*
 
-case class DeleteInput(path: String) derives Codec.AsObject, McpSchema
+case class DeleteInput(path: String) derives Decoder
+given InputDef[DeleteInput] = InputDef.raw(
+  JsonSchemaType.ObjectSchema(
+    properties = Some(Map("path" -> JsonSchemaType.StringSchema(description = Some("File path")))),
+    required = Some(List("path"))
+  ),
+  summon[Decoder[DeleteInput]]
+)
 
 val deleteTool = ToolDef.unstructured[IO, DeleteInput](
   name = "delete-file",
@@ -164,12 +164,15 @@ The second parameter provides access to server capabilities:
 
 ```scala mdoc:compile-only
 import cats.effect.IO
-import io.circe.{Codec, Json}
+import io.circe.Json
 import mcp.protocol.{Content, LoggingLevel}
-import mcp.server.ToolDef
-import mcp.schema.McpSchema
+import mcp.server.*
 
-case class ProcessInput(data: String) derives Codec.AsObject, McpSchema
+type ProcessInput = (data: String, verbose: Option[Boolean])
+given InputDef[ProcessInput] = InputDef[ProcessInput](
+  data    = InputField[String]("Data to process"),
+  verbose = InputField[Option[Boolean]]("Enable verbose logging")
+)
 
 val processTool = ToolDef.unstructured[IO, ProcessInput](
   name = "process",
@@ -193,12 +196,14 @@ For business logic failures, return content indicating the error:
 
 ```scala mdoc:compile-only
 import cats.effect.IO
-import io.circe.Codec
 import mcp.protocol.Content
-import mcp.server.ToolDef
-import mcp.schema.McpSchema
+import mcp.server.*
 
-case class DivideInput(a: Double, b: Double) derives Codec.AsObject, McpSchema
+type DivideInput = (a: Double, b: Double)
+given InputDef[DivideInput] = InputDef[DivideInput](
+  a = InputField[Double]("Dividend"),
+  b = InputField[Double]("Divisor")
+)
 
 val divideTool = ToolDef.unstructured[IO, DivideInput](
   name = "divide",

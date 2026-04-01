@@ -1,10 +1,8 @@
 package everything.tools
 
 import cats.effect.Async
-import io.circe.Codec
 import mcp.protocol.{Annotations, Content, Role, ToolAnnotations}
-import mcp.schema.{McpSchema, description}
-import mcp.server.ToolDef
+import mcp.server.{InputDef, InputField, ToolDef}
 
 /** Annotated message tool - demonstrates content with annotations.
   *
@@ -12,16 +10,12 @@ import mcp.server.ToolDef
   */
 object AnnotatedMessageTool {
 
-  @description("Input for annotated message")
-  case class Input(
-      @description("The message to annotate")
-      message: String,
-      @description("Priority level (0.0 to 1.0)")
-      priority: Option[Double],
-      @description("Target audience: user, assistant, or both")
-      audience: Option[String]
-  ) derives Codec.AsObject,
-        McpSchema
+  type Input = (message: String, priority: Option[Double], audience: Option[String])
+  given InputDef[Input] = InputDef[Input](
+    message = InputField[String]("The message to annotate"),
+    priority = InputField[Option[Double]]("Priority level (0.0 to 1.0)"),
+    audience = InputField[Option[String]]("Target audience: user, assistant, or both")
+  )
 
   def apply[F[_]: Async]: ToolDef[F, Input, Nothing] =
     ToolDef.unstructured[F, Input](

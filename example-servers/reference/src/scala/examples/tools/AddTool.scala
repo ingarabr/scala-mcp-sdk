@@ -2,33 +2,25 @@ package examples.tools
 
 import cats.effect.*
 import io.circe.*
-import mcp.protocol.ToolAnnotations
-import mcp.schema.{McpSchema, description}
-import mcp.server.ToolDef
+import mcp.protocol.{JsonSchemaType, ToolAnnotations}
+import mcp.server.{InputDef, InputField, OutputDef, ToolDef}
 
-/** Add tool - adds two numbers together.
-  *
-  * This demonstrates a tool with numeric input and output, using automatic schema derivation from Scaladoc comments.
-  */
 object AddTool {
 
-  @description("Input parameters for addition")
-  case class Input(
-      @description("First number")
-      a: Double,
-      @description("Second number")
-      b: Double
-  ) derives Codec.AsObject,
-        McpSchema
+  type Input = (a: Double, b: Double)
+  given InputDef[Input] = InputDef[Input](
+    a = InputField[Double]("First number"),
+    b = InputField[Double]("Second number")
+  )
 
-  @description("Result of addition operation")
-  case class Output(
-      @description("Sum of the two numbers")
-      result: Double
-  ) derives Codec.AsObject
-  case object Output {
-    given McpSchema[Output] = McpSchema.derived
-  }
+  case class Output(result: Double) derives Codec.AsObject
+  given OutputDef[Output] = OutputDef.raw(
+    JsonSchemaType.ObjectSchema(
+      properties = Some(Map("result" -> JsonSchemaType.NumberSchema(description = Some("Sum of the two numbers")))),
+      required = Some(List("result"))
+    ),
+    summon[Encoder.AsObject[Output]]
+  )
 
   def apply[F[_]: Async]: ToolDef[F, Input, Output] =
     ToolDef.structured[F, Input, Output](

@@ -34,12 +34,14 @@ Built on Cats Effect 3, fs2, http4s, and Circe.
 
 ```scala mdoc:compile-only
 import cats.effect.*
-import io.circe.Codec
 import mcp.protocol.*
 import mcp.server.*
-import mcp.schema.McpSchema
 
-case class GreetInput(name: String) derives Codec.AsObject, McpSchema
+type GreetInput = (name: String, formal: Option[Boolean])
+given InputDef[GreetInput] = InputDef[GreetInput](
+  name   = InputField[String]("Name to greet"),
+  formal = InputField[Option[Boolean]]("Use formal greeting")
+)
 
 object MyServer extends IOApp.Simple {
   val greetTool = ToolDef.unstructured[IO, GreetInput](

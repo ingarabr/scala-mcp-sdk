@@ -1,10 +1,9 @@
 package everything.prompts
 
 import cats.effect.Async
-import io.circe.{Codec, Decoder}
-import mcp.protocol.{CompletionCompletion, Content, PromptMessage, ResourceContents, Role}
-import mcp.schema.{McpSchema, description}
-import mcp.server.{CompletionDef, PromptDef}
+import io.circe.Decoder
+import mcp.protocol.{CompletionCompletion, Content, JsonSchemaType, PromptMessage, ResourceContents, Role}
+import mcp.server.{CompletionDef, InputDef, InputField, PromptDef}
 
 /** Simple prompt with no arguments. */
 object SimplePrompt {
@@ -31,14 +30,11 @@ object SimplePrompt {
 /** Prompt with arguments - demonstrates typed prompt parameters. */
 object ArgumentsPrompt {
 
-  @description("Arguments for the greeting prompt")
-  case class Args(
-      @description("Name of the person to greet")
-      name: String,
-      @description("Style of greeting: formal or casual")
-      style: Option[String]
-  ) derives Codec.AsObject,
-        McpSchema
+  type Args = (name: String, style: Option[String])
+  given InputDef[Args] = InputDef[Args](
+    name = InputField[String]("Name of the person to greet"),
+    style = InputField[Option[String]]("Style of greeting: formal or casual")
+  )
 
   def apply[F[_]: Async]: PromptDef[F, Args] =
     PromptDef.derived[F, Args](
@@ -86,12 +82,13 @@ object ArgumentsPromptCompletion {
 /** Prompt with embedded resource - demonstrates including resource content in prompts. */
 object EmbeddedResourcePrompt {
 
-  @description("Arguments for the resource prompt")
-  case class Args(
-      @description("ID of the resource to embed")
-      resourceId: Option[Int]
-  ) derives Codec.AsObject,
-        McpSchema
+  case class Args(resourceId: Option[Int]) derives Decoder
+  given InputDef[Args] = InputDef.raw(
+    JsonSchemaType.ObjectSchema(
+      properties = Some(Map("resourceId" -> JsonSchemaType.IntegerSchema(description = Some("ID of the resource to embed"))))
+    ),
+    summon[Decoder[Args]]
+  )
 
   def apply[F[_]: Async]: PromptDef[F, Args] =
     PromptDef.derived[F, Args](

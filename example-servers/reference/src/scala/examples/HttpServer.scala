@@ -24,7 +24,7 @@ object HttpServer extends IOApp {
       info = Implementation("http-mcp-server", "1.0.0"),
       tools = List(EchoTool[IO], AddTool[IO], LogAndProgressTool[IO]),
       resources = List(ServerConfigResource[IO], TimestampResource[IO]),
-      resourceTemplates = List(FileTemplateResource[IO]()),
+      resourceTemplates = List(FileTemplateResource[IO]),
       prompts = List(GreetingPrompt[IO])
     )
 

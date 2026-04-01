@@ -6,7 +6,6 @@ import cats.syntax.all.*
 import io.circe.*
 import io.circe.syntax.*
 import mcp.protocol.{JsonSchemaType, Resource as ProtocolResource, *}
-import mcp.schema.McpSchema
 
 /** A tool definition with typed input and optional typed output.
   *
@@ -14,12 +13,20 @@ import mcp.schema.McpSchema
   *   - `ToolDef.unstructured` for content tools (text, images, etc.)
   *   - `ToolDef.structured` for typed data tools
   *
+  * Input/output schemas are resolved via `using` parameters. Define them as `given` instances:
+  * {{{
+  * type Input = (message: String)
+  * given InputDef[Input] = InputDef[Input](
+  *   message = InputField[String]("The message")
+  * )
+  * }}}
+  *
   * @tparam F
   *   Effect type (e.g., IO)
   * @tparam Input
-  *   Input type (must have McpSchema instance)
+  *   Input type (must have InputSchema instance)
   * @tparam Output
-  *   Output type (must have McpSchema if structured, or Nothing if unstructured)
+  *   Output type (must have OutputSchema if structured, or Nothing if unstructured)
   */
 final case class ToolDef[F[_], Input, Output] private (
     name: String,
@@ -28,8 +35,8 @@ final case class ToolDef[F[_], Input, Output] private (
     annotations: Option[ToolAnnotations] = None,
     icons: Option[List[Icon]] = None
 )(using
-    val inputSchema: McpSchema[Input],
-    val outputSchema: Option[McpSchema[Output]]
+    val inputSchema: InputSchema[Input],
+    val outputSchema: Option[OutputSchema[Output]]
 ) {
 
   /** Convert to protocol Tool type for listing */
@@ -50,7 +57,6 @@ final case class ToolDef[F[_], Input, Output] private (
   ): F[CallToolResult] = {
     val argsJson = arguments.getOrElse(JsonObject.empty).asJson
 
-    // Decode input using the schema's codec
     val inputResult = argsJson.as[Input](inputSchema.decoder)
 
     inputResult match {
@@ -76,11 +82,9 @@ final case class ToolDef[F[_], Input, Output] private (
     }
   }
 
-  /** Encode ToolOutput into CallToolResult without type casting */
   private def encodeToolOutput(output: ToolOutput[Output]): CallToolResult =
     output match {
       case ToolOutput.Unstructured(content) =>
-        // Return content directly for unstructured output
         CallToolResult(
           content = content,
           isError = Some(false)
@@ -95,7 +99,6 @@ final case class ToolDef[F[_], Input, Output] private (
               isError = Some(false)
             )
           case None =>
-            // This shouldn't happen due to types, but handle gracefully
             CallToolResult(
               content = List(Content.Text(s"Unable to encode result: $data")),
               isError = Some(true)
@@ -106,26 +109,14 @@ final case class ToolDef[F[_], Input, Output] private (
 
 object ToolDef {
 
-  /** Create a tool that returns flexible content (text, images, multiple items).
-    *
-    * Use this for human-readable content. Ignore the context parameter if you don't need progress/logging.
-    *
-    * Example:
-    * {{{
-    * ToolDef.unstructured[IO, SearchInput](
-    *   name = "search"
-    * ) { (input, _) =>
-    *   IO.pure(List(Content.Text("Results...")))
-    * }
-    * }}}
-    */
+  /** Create a tool that returns flexible content (text, images, multiple items). */
   def unstructured[F[_], Input](
       name: String,
       description: Option[String] = None,
       annotations: Option[ToolAnnotations] = None,
       icons: Option[List[Icon]] = None
   )(handler: (Input, ToolContext[F]) => F[List[Content]])(using
-      schema: McpSchema[Input],
+      schema: InputSchema[Input],
       F: cats.Functor[F]
   ): ToolDef[F, Input, Nothing] =
     ToolDef[F, Input, Nothing](
@@ -136,27 +127,15 @@ object ToolDef {
       icons = icons
     )(using schema, None)
 
-  /** Create a tool that returns structured, typed data.
-    *
-    * Use this for typed, machine-readable data. Ignore the context parameter if you don't need progress/logging.
-    *
-    * Example:
-    * {{{
-    * ToolDef.structured[IO, AddInput, AddOutput](
-    *   name = "add"
-    * ) { (input, _) =>
-    *   IO.pure(AddOutput(input.a + input.b))
-    * }
-    * }}}
-    */
+  /** Create a tool that returns structured, typed data. */
   def structured[F[_], Input, Output](
       name: String,
       description: Option[String] = None,
       annotations: Option[ToolAnnotations] = None,
       icons: Option[List[Icon]] = None
   )(handler: (Input, ToolContext[F]) => F[Output])(using
-      inputSchema: McpSchema[Input],
-      outputSchema: McpSchema[Output],
+      inputSchema: InputSchema[Input],
+      outputSchema: OutputSchema[Output],
       F: cats.Functor[F]
   ): ToolDef[F, Input, Output] =
     ToolDef[F, Input, Output](
@@ -484,21 +463,17 @@ case class PromptDef[F[_], Args](
 
 object PromptDef {
 
-  /** Create a prompt with arguments derived from McpSchema.
+  /** Create a prompt with arguments derived from an InputSchema.
     *
-    * This factory method extracts argument specifications from the McpSchema's JSON schema, including descriptions from @description
-    * annotations on case class fields.
+    * Extracts argument specifications (name, description, required) from the schema's JSON representation.
     *
     * Example:
     * {{{
-    * @description("Translation prompt arguments")
-    * case class Args(
-    *   @description("Text to translate") text: String,
-    *   @description("Target language") language: String
-    * ) derives Codec.AsObject
-    * object Args {
-    *   given McpSchema[Args] = McpSchema.derived
-    * }
+    * type Args = (text: String, language: String)
+    * given InputDef[Args] = InputDef[Args](
+    *   text     = InputField[String]("Text to translate"),
+    *   language = InputField[String]("Target language")
+    * )
     *
     * PromptDef.derived[IO, Args](
     *   name = "translate",
@@ -507,21 +482,12 @@ object PromptDef {
     *   IO.pure(List(PromptMessage(...)))
     * }
     * }}}
-    *
-    * @param name
-    *   Unique name for the prompt
-    * @param description
-    *   Optional description
-    * @param icons
-    *   Optional icons for UI display
-    * @param handler
-    *   Function to generate prompt messages from typed arguments
     */
   def derived[F[_], Args](
       name: String,
       description: Option[String] = None,
       icons: Option[List[Icon]] = None
-  )(handler: Args => F[List[PromptMessage]])(using schema: McpSchema[Args]): PromptDef[F, Args] = {
+  )(handler: Args => F[List[PromptMessage]])(using schema: InputSchema[Args]): PromptDef[F, Args] = {
     val arguments = extractArguments(schema.jsonSchema)
     new PromptDef[F, Args](
       name = name,

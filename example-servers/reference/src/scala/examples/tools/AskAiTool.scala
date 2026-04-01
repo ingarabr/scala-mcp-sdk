@@ -4,19 +4,15 @@ import cats.effect.*
 import cats.syntax.all.*
 import io.circe.*
 import mcp.protocol.{Content, Role, SamplingMessage}
-import mcp.schema.{McpSchema, description}
-import mcp.server.{SampleResult, ToolDef}
+import mcp.server.{InputDef, InputField, OutputDef, SampleResult, ToolDef}
 
 object AskAiTool {
 
-  @description("Ask the AI a question")
-  case class Input(
-      @description("The question to ask")
-      question: String,
-      @description("Optional context to include")
-      context: Option[String] = None
-  ) derives Codec.AsObject,
-        McpSchema
+  type Input = (question: String, context: Option[String])
+  given InputDef[Input] = InputDef[Input](
+    question = InputField[String]("The question to ask"),
+    context = InputField[Option[String]]("Optional context to include")
+  )
 
   case class Output(
       success: Boolean,
@@ -24,9 +20,12 @@ object AskAiTool {
       model: Option[String],
       error: Option[String]
   ) derives Codec.AsObject
-  object Output {
-    given McpSchema[Output] = McpSchema.derived
-  }
+  given OutputDef[Output] = OutputDef[Output](
+    success = InputField[Boolean]("Whether the request succeeded"),
+    answer = InputField[Option[String]]("The AI's answer"),
+    model = InputField[Option[String]]("Model used"),
+    error = InputField[Option[String]]("Error message if failed")
+  )
 
   def apply[F[_]: Async]: ToolDef[F, Input, Output] =
     ToolDef.structured[F, Input, Output](

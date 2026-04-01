@@ -2,10 +2,8 @@ package everything.tools
 
 import cats.effect.Async
 import cats.syntax.all.*
-import io.circe.Codec
 import mcp.protocol.{Content, CreateMessageResult, Role, SamplingMessage, ToolAnnotations}
-import mcp.schema.{McpSchema, description}
-import mcp.server.{SampleResult, ToolDef}
+import mcp.server.{InputDef, InputField, SampleResult, ToolDef}
 
 /** Sampling tool - demonstrates requesting LLM sampling from the client.
   *
@@ -13,14 +11,11 @@ import mcp.server.{SampleResult, ToolDef}
   */
 object SamplingTool {
 
-  @description("Input for sampling request")
-  case class Input(
-      @description("The prompt to send to the LLM")
-      prompt: String,
-      @description("Maximum number of tokens to generate")
-      maxTokens: Option[Int]
-  ) derives Codec.AsObject,
-        McpSchema
+  type Input = (prompt: String, maxTokens: Option[Int])
+  given InputDef[Input] = InputDef[Input](
+    prompt = InputField[String]("The prompt to send to the LLM"),
+    maxTokens = InputField[Option[Int]]("Maximum number of tokens to generate")
+  )
 
   def apply[F[_]: Async]: ToolDef[F, Input, Nothing] =
     ToolDef.unstructured[F, Input](

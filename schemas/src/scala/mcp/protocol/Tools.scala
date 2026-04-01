@@ -22,7 +22,9 @@ enum JsonSchemaType {
       /** List of required property names. */
       required: Option[List[String]] = None,
       /** Optional description. */
-      description: Option[String] = None
+      description: Option[String] = None,
+      /** Optional display title. */
+      title: Option[String] = None
   )
 
   /** String schema.
@@ -31,7 +33,19 @@ enum JsonSchemaType {
     */
   case StringSchema(
       /** Optional description. */
-      description: Option[String] = None
+      description: Option[String] = None,
+      /** Optional display title. */
+      title: Option[String] = None,
+      /** Minimum string length. */
+      minLength: Option[Int] = None,
+      /** Maximum string length. */
+      maxLength: Option[Int] = None,
+      /** String format hint (e.g. "email", "uri", "date", "date-time"). */
+      format: Option[String] = None,
+      /** Default value. */
+      default: Option[String] = None,
+      /** Allowed values (enum constraint). */
+      `enum`: Option[List[String]] = None
   )
 
   /** Number schema (floating point).
@@ -40,7 +54,15 @@ enum JsonSchemaType {
     */
   case NumberSchema(
       /** Optional description. */
-      description: Option[String] = None
+      description: Option[String] = None,
+      /** Optional display title. */
+      title: Option[String] = None,
+      /** Minimum value. */
+      minimum: Option[Double] = None,
+      /** Maximum value. */
+      maximum: Option[Double] = None,
+      /** Default value. */
+      default: Option[Double] = None
   )
 
   /** Integer schema.
@@ -49,7 +71,15 @@ enum JsonSchemaType {
     */
   case IntegerSchema(
       /** Optional description. */
-      description: Option[String] = None
+      description: Option[String] = None,
+      /** Optional display title. */
+      title: Option[String] = None,
+      /** Minimum value. */
+      minimum: Option[Int] = None,
+      /** Maximum value. */
+      maximum: Option[Int] = None,
+      /** Default value. */
+      default: Option[Int] = None
   )
 
   /** Boolean schema.
@@ -58,7 +88,11 @@ enum JsonSchemaType {
     */
   case BooleanSchema(
       /** Optional description. */
-      description: Option[String] = None
+      description: Option[String] = None,
+      /** Optional display title. */
+      title: Option[String] = None,
+      /** Default value. */
+      default: Option[Boolean] = None
   )
 
   /** Null schema.
@@ -78,7 +112,9 @@ enum JsonSchemaType {
       /** Schema for array items. */
       items: Option[JsonSchemaType] = None,
       /** Optional description. */
-      description: Option[String] = None
+      description: Option[String] = None,
+      /** Optional display title. */
+      title: Option[String] = None
   )
 }
 
@@ -96,10 +132,18 @@ object JsonSchemaType {
       case "ArraySchema"   => "array"
       case other           => other
     }
-    .withSnakeCaseMemberNames
     .withDiscriminator("type")
 
   given Codec.AsObject[JsonSchemaType] = Codec.AsObject.derivedConfigured
+
+  extension (s: JsonSchemaType) {
+
+    /** Convert to a raw JsonObject, useful at protocol boundaries (e.g. elicitation). */
+    def toJsonObject: JsonObject =
+      JsonObject.fromIterable(
+        Encoder.AsObject[JsonSchemaType].encodeObject(s).toIterable.filter { case (_, v) => !v.isNull }
+      )
+  }
 }
 
 /** Definition of a tool the server can call.

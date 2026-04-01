@@ -210,7 +210,7 @@ class SimpleServerSuite extends CatsEffectSuite {
                 tools.find(_.name == "add") match {
                   case Some(addTool) =>
                     addTool.inputSchema match {
-                      case JsonSchemaType.ObjectSchema(properties, _, _) =>
+                      case JsonSchemaType.ObjectSchema(properties, _, _, _) =>
                         assert(properties.isDefined, "Add tool should have properties in schema")
                         assert(properties.get.contains("a"), "Add tool should have field 'a' in schema")
                         assert(properties.get.contains("b"), "Add tool should have field 'b' in schema")

@@ -158,29 +158,18 @@ trait ToolContext[F[_]] {
   /** Elicitation capability of the client. */
   def elicitationCapability: ElicitationCapability
 
-  /** Request typed information from the user via a form.
+  /** Request typed information from the user via an InputDef.
     *
-    * The client displays a form based on the fields and returns the user's input.
-    *
-    * Example:
-    * {{{
-    * val fields = (
-    *   FormField.boolean.required("confirm"),
-    *   FormField.string.optional("reason")
-    * )
-    * ctx.elicit("Delete file?", fields).map {
-    *   case ElicitResult.Accepted((confirmed, reason)) => ...
-    * }
-    * }}}
+    * Uses `InputDef` which ties field metadata to a result type. Same InputDef used for tool inputs can be reused for elicitation forms.
     *
     * @param message
     *   User-facing prompt describing what information is needed
-    * @param fields
-    *   Tuple of FormField definitions
+    * @param inputDef
+    *   Input definition with schema and extraction logic
     * @return
-    *   Accepted with extracted values, Declined, or Cancelled
+    *   Accepted with extracted value of type A, Declined, or Cancelled
     */
-  def elicit[T <: Tuple](message: String, fields: T): F[ElicitResult[FormFields.ExtractTypes[T]]]
+  def elicit[A](message: String, inputDef: InputDef[A]): F[ElicitResult[A]]
 
   /** Direct user to a URL for out-of-band interaction.
     *

@@ -1,27 +1,16 @@
 package examples.prompts
 
 import cats.effect.*
-import io.circe.*
 import mcp.protocol.{Content, PromptMessage, Role}
-import mcp.schema.{McpSchema, description}
-import mcp.server.PromptDef
+import mcp.server.{InputDef, InputField, PromptDef}
 
-/** Translate prompt - generates a translation request.
-  *
-  * This demonstrates a prompt with completable arguments derived from McpSchema. The "language" argument can be auto-completed using the
-  * LanguageCompletion provider.
-  */
 object TranslatePrompt {
 
-  case class Args(
-      @description("The text to translate")
-      text: String,
-      @description("Target language (e.g., Spanish, French, German)")
-      language: String
-  ) derives Codec.AsObject
-  object Args {
-    given McpSchema[Args] = McpSchema.derived
-  }
+  type Args = (text: String, language: String)
+  given InputDef[Args] = InputDef[Args](
+    text = InputField[String]("The text to translate"),
+    language = InputField[String]("Target language (e.g., Spanish, French, German)")
+  )
 
   def apply[F[_]: Async]: PromptDef[F, Args] =
     PromptDef.derived[F, Args](

@@ -19,22 +19,18 @@ Each prompt has:
 
 ## Basic Example
 
-The simplest way is to derive arguments from `McpSchema`:
+Define arguments with `InputDef` and use `PromptDef.derived`:
 
 ```scala mdoc:compile-only
 import cats.effect.Async
-import io.circe.Codec
 import mcp.protocol.{Content, PromptMessage, Role}
-import mcp.schema.{McpSchema, description}
-import mcp.server.PromptDef
+import mcp.server.*
 
-case class GreetArgs(
-  @description("Name to greet")
-  name: String
-) derives Codec.AsObject
-object GreetArgs {
-  given McpSchema[GreetArgs] = McpSchema.derived
-}
+type GreetArgs = (name: String, formal: Option[Boolean])
+given InputDef[GreetArgs] = InputDef[GreetArgs](
+  name   = InputField[String]("Name to greet"),
+  formal = InputField[Option[Boolean]]("Use formal greeting")
+)
 
 def greetingPrompt[F[_]: Async]: PromptDef[F, GreetArgs] =
   PromptDef.derived[F, GreetArgs](
@@ -51,20 +47,14 @@ def greetingPrompt[F[_]: Async]: PromptDef[F, GreetArgs] =
 
 ```scala mdoc:compile-only
 import cats.effect.Async
-import io.circe.Codec
 import mcp.protocol.{Content, PromptMessage, Role}
-import mcp.schema.{McpSchema, description}
-import mcp.server.PromptDef
+import mcp.server.*
 
-case class TranslateArgs(
-  @description("Text to translate")
-  text: String,
-  @description("Target language (e.g., Spanish, French)")
-  language: String
-) derives Codec.AsObject
-object TranslateArgs {
-  given McpSchema[TranslateArgs] = McpSchema.derived
-}
+type TranslateArgs = (text: String, language: String)
+given InputDef[TranslateArgs] = InputDef[TranslateArgs](
+  text     = InputField[String]("Text to translate"),
+  language = InputField[String]("Target language (e.g., Spanish, French)")
+)
 
 def translatePrompt[F[_]: Async]: PromptDef[F, TranslateArgs] =
   PromptDef.derived[F, TranslateArgs](
@@ -83,15 +73,18 @@ Return multiple messages to set up a conversation:
 
 ```scala mdoc:compile-only
 import cats.effect.Async
-import io.circe.Codec
-import mcp.protocol.{Content, PromptMessage, Role}
-import mcp.schema.McpSchema
-import mcp.server.PromptDef
+import io.circe.Decoder
+import mcp.protocol.{Content, JsonSchemaType, PromptMessage, Role}
+import mcp.server.*
 
-case class ReviewArgs(code: String) derives Codec.AsObject
-object ReviewArgs {
-  given McpSchema[ReviewArgs] = McpSchema.derived
-}
+case class ReviewArgs(code: String) derives Decoder
+given InputDef[ReviewArgs] = InputDef.raw(
+  JsonSchemaType.ObjectSchema(
+    properties = Some(Map("code" -> JsonSchemaType.StringSchema(description = Some("Code to review")))),
+    required = Some(List("code"))
+  ),
+  summon[Decoder[ReviewArgs]]
+)
 
 def reviewPrompt[F[_]: Async]: PromptDef[F, ReviewArgs] =
   PromptDef.derived[F, ReviewArgs](

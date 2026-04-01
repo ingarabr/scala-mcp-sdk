@@ -20,17 +20,19 @@ We provide `HttpRoutes[F]`, you provide the HTTP server. This gives you full con
 
 ```scala
 import cats.effect.*
-import io.circe.Codec
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.server.Router
 import com.comcast.ip4s.*
 import mcp.protocol.*
 import mcp.server.*
 import mcp.http4s.session.*
-import mcp.schema.McpSchema
 import scala.concurrent.duration.*
 
-case class EchoInput(message: String) derives Codec.AsObject, McpSchema
+type EchoInput = (message: String, upper: Option[Boolean])
+given InputDef[EchoInput] = InputDef[EchoInput](
+  message = InputField[String]("Message to echo"),
+  upper   = InputField[Option[Boolean]]("Convert to uppercase")
+)
 
 object MyHttpServer extends IOApp.Simple {
   val echoTool = ToolDef.unstructured[IO, EchoInput](

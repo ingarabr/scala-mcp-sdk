@@ -11,34 +11,35 @@ See [MCP elicitation](https://modelcontextprotocol.io/docs/concepts/elicitation)
 
 ## Requesting User Input
 
-Use `ctx.elicit` with a tuple of `FormField` definitions. Here's a complete example from a file deletion tool:
+Use `ctx.elicit` with an `InputDef` — the same type used for tool input schemas. Here's a complete example from a file
+deletion tool:
 
 ```scala mdoc:compile-only
 import cats.effect.Async
-import cats.syntax.all.*
 import io.circe.Codec
 import mcp.protocol.ToolAnnotations
-import mcp.schema.{McpSchema, description}
 import mcp.server.*
 
 object DeleteFileTool {
 
-  @description("File to delete")
-  case class Input(
-      @description("Path to the file")
-      path: String
-  ) derives Codec.AsObject, McpSchema
+  type Input = (path: String, force: Option[Boolean])
+  given InputDef[Input] = InputDef[Input](
+    path  = InputField[String]("Path to the file"),
+    force = InputField[Option[Boolean]]("Skip confirmation if true")
+  )
 
   case class Output(deleted: Boolean, message: String) derives Codec.AsObject
-  object Output {
-    given McpSchema[Output] = McpSchema.derived
-  }
+  given OutputDef[Output] = OutputDef[Output](
+    deleted = InputField[Boolean]("Whether the file was deleted"),
+    message = InputField[String]("Result message")
+  )
 
-  // Define fields as a tuple - each field extracts to its type
-  private val confirmFields = (
-    FormField.boolean.required("confirm", title = Some("Confirm"), description = Some("Set to true to confirm deletion")),
-    FormField.oneOf.optional("reason", List("cleanup", "outdated", "duplicate", "other"), title = Some("Reason")),
-    FormField.string.required("confirmedBy", title = Some("Confirmed by"), description = Some("Your name"))
+  // Elicit form — same InputField/InputDef pattern as tool input
+  type ConfirmForm = (confirm: Boolean, reason: Option[String], confirmedBy: String)
+  private val confirmDef = InputDef[ConfirmForm](
+    confirm     = InputField[Boolean](title = Some("Confirm"), description = Some("Set to true to confirm deletion")),
+    reason      = InputField[Option[String]](title = Some("Reason")),
+    confirmedBy = InputField[String](title = Some("Confirmed by"), description = Some("Your name"))
   )
 
   def apply[F[_]: Async]: ToolDef[F, Input, Output] =
@@ -50,18 +51,18 @@ object DeleteFileTool {
         destructiveHint = Some(true)
       ))
     ) { (input, ctx) =>
-      // Check capability before calling elicit
-      ctx.elicitationCapability.fold(
-        notSupported = Async[F].pure(Output(false, "Elicitation not supported")),
-        supported = ctx.elicit(s"Delete ${input.path}?", confirmFields).map {
-          // Destructure the tuple - types match field definitions
-          case ElicitResult.Accepted((confirmed, reason, confirmedBy)) =>
-            if confirmed then Output(true, s"Deleted ${input.path} by $confirmedBy" + reason.fold("")(r => s" ($r)"))
-            else Output(false, "User did not confirm")
-          case ElicitResult.Declined  => Output(false, "User declined")
-          case ElicitResult.Cancelled => Output(false, "Cancelled")
-        }
-      )
+      if input.force.getOrElse(false) then Async[F].pure(Output(true, s"Force-deleted ${input.path}"))
+      else
+        ctx.elicitationCapability.fold(
+          notSupported = Async[F].pure(Output(false, "Elicitation not supported")),
+          supported = ctx.elicit(s"Delete ${input.path}?", confirmDef).map {
+            case ElicitResult.Accepted(form) =>
+              if form.confirm then Output(true, s"Deleted ${input.path} by ${form.confirmedBy}")
+              else Output(false, "User did not confirm")
+            case ElicitResult.Declined  => Output(false, "User declined")
+            case ElicitResult.Cancelled => Output(false, "Cancelled")
+          }
+        )
     }
 }
 ```
@@ -70,73 +71,57 @@ object DeleteFileTool {
 
 | Response            | Meaning                         |
 |---------------------|---------------------------------|
-| `Accepted(values)`  | User submitted data (tuple)     |
+| `Accepted(values)`  | User submitted data             |
 | `Declined`          | User explicitly declined        |
 | `Cancelled`         | User dismissed without choosing |
 
 ## Field Types
 
-Define what input you need using `FormField`:
+Define fields using `InputField[A]` with `InputFieldType` instances for the supported types:
 
 ### String
 
 ```scala mdoc:compile-only
-import mcp.server.{FormField, StringFormat}
+import mcp.server.InputField
 
-FormField.string.required("name")
-FormField.string.optional("email", format = Some(StringFormat.Email))
-FormField.string.required("url", format = Some(StringFormat.Uri))
+InputField[String]("User name")
+InputField[Option[String]]("Optional notes")
+InputField[String](title = Some("Email"), description = Some("Your email address"))
 ```
 
-### Number
+### Number / Integer
 
 ```scala mdoc:compile-only
-import mcp.server.FormField
+import mcp.server.InputField
 
-FormField.number.required("amount")
-FormField.number.optional("threshold", minimum = Some(0.0), maximum = Some(100.0))
-```
-
-### Integer
-
-```scala mdoc:compile-only
-import mcp.server.FormField
-
-FormField.integer.required("count")
-FormField.integer.optional("limit", minimum = Some(1), maximum = Some(100))
+InputField[Double]("Amount")
+InputField[Int]("Count")
+InputField[Option[Int]]("Optional limit")
 ```
 
 ### Boolean
 
 ```scala mdoc:compile-only
-import mcp.server.FormField
+import mcp.server.InputField
 
-FormField.boolean.required("confirm")
-FormField.boolean.optional("sendEmail", default = Some(true))
+InputField[Boolean]("Confirm action")
+InputField[Option[Boolean]](title = Some("Subscribe"), description = Some("Subscribe to newsletter"))
 ```
 
-### Enum (Selection)
+### Combining Fields
+
+Fields are combined via named tuples with `InputDef`:
 
 ```scala mdoc:compile-only
-import mcp.server.FormField
+import mcp.server.*
 
-FormField.oneOf.required("size", List("small", "medium", "large"))
-FormField.oneOf.optional("priority", List("low", "normal", "high"))
-```
-
-### Multiple Fields
-
-Combine fields in a tuple:
-
-```scala mdoc:compile-only
-import mcp.server.{FormField, StringFormat}
-
-val fields = (
-  FormField.string.required("name"),
-  FormField.string.required("email", format = Some(StringFormat.Email)),
-  FormField.boolean.optional("subscribe")
+type UserForm = (name: String, email: String, subscribe: Option[Boolean])
+val formDef = InputDef[UserForm](
+  name      = InputField[String]("Your name"),
+  email     = InputField[String]("Email address"),
+  subscribe = InputField[Option[Boolean]]("Subscribe to newsletter")
 )
-// Returns: (String, String, Option[Boolean])
+// Result type: (name: String, email: String, subscribe: Option[Boolean])
 ```
 
 ## Out-of-Band Elicitation

@@ -46,29 +46,23 @@ Here's a minimal MCP server with a single tool:
 
 ```scala mdoc:compile-only
 import cats.effect.*
-import io.circe.*
 import mcp.protocol.*
 import mcp.server.*
-import mcp.schema.{McpSchema, description}
 
-// Define the input type with schema derivation
-@description("Input for greeting")
-case class GreetInput(
-  @description("Name to greet")
-  name: String
-) derives Codec.AsObject
-
-object GreetInput {
-  given McpSchema[GreetInput] = McpSchema.derived
-}
+// Define the input type as a named tuple with field descriptors
+type GreetInput = (name: String, excited: Option[Boolean])
+given InputDef[GreetInput] = InputDef[GreetInput](
+  name    = InputField[String]("Name to greet"),
+  excited = InputField[Option[Boolean]]("Add exclamation marks")
+)
 
 object MyServer extends IOApp.Simple {
-  // Define the tool
   val greetTool = ToolDef.unstructured[IO, GreetInput](
     name = "greet",
     description = Some("Greet someone by name")
   ) { (input, ctx) =>
-    IO.pure(List(Content.Text(s"Hello, ${input.name}!")))
+    val mark = if input.excited.getOrElse(false) then "!!!" else "!"
+    IO.pure(List(Content.Text(s"Hello, ${input.name}$mark")))
   }
 
   def run: IO[Unit] = {
@@ -86,8 +80,8 @@ object MyServer extends IOApp.Simple {
 
 ## What's Happening?
 
-1. **Input type** - Define a case class with `@description` annotations for schema generation
-2. **`ToolDef.unstructured`** - Creates a tool that returns raw content
+1. **Input type** - Define a named tuple with `InputField` descriptors for schema generation
+2. **`ToolDef.unstructured`** - Creates a tool that returns raw content (resolves `InputDef` via `using`)
 3. **`McpServer[IO](...)`** - Creates a server resource with your primitives
 4. **`StdioTransport[IO]()`** - Creates a stdio transport resource
 5. **`server.serve(transport)`** - Connects them together

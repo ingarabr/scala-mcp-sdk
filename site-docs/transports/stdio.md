@@ -10,12 +10,14 @@ The stdio transport uses standard input/output for communication. It's the simpl
 
 ```scala mdoc:compile-only
 import cats.effect.*
-import io.circe.Codec
 import mcp.protocol.*
 import mcp.server.*
-import mcp.schema.McpSchema
 
-case class EchoInput(message: String) derives Codec.AsObject, McpSchema
+type EchoInput = (message: String, upper: Option[Boolean])
+given InputDef[EchoInput] = InputDef[EchoInput](
+  message = InputField[String]("Message to echo"),
+  upper   = InputField[Option[Boolean]]("Convert to uppercase")
+)
 
 object MyServer extends IOApp.Simple {
   val echoTool = ToolDef.unstructured[IO, EchoInput](
@@ -78,12 +80,15 @@ Since stdout is used for MCP messages, you cannot log to stdout directly. Option
 
 ```scala mdoc:compile-only
 import cats.effect.IO
-import io.circe.{Codec, Json}
+import io.circe.Json
 import mcp.protocol.{Content, LoggingLevel}
-import mcp.server.ToolDef
-import mcp.schema.McpSchema
+import mcp.server.*
 
-case class MyInput(data: String) derives Codec.AsObject, McpSchema
+type MyInput = (data: String, verbose: Option[Boolean])
+given InputDef[MyInput] = InputDef[MyInput](
+  data    = InputField[String]("Data to process"),
+  verbose = InputField[Option[Boolean]]("Enable verbose logging")
+)
 
 // Using MCP's built-in logging
 val myTool = ToolDef.unstructured[IO, MyInput](

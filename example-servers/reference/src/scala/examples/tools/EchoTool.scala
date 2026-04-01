@@ -3,23 +3,15 @@ package examples.tools
 import cats.effect.*
 import io.circe.*
 import mcp.protocol.{Content, Icon, IconTheme}
-import mcp.schema.{McpSchema, description}
-import mcp.server.ToolDef
+import mcp.server.{InputDef, InputField, ToolDef}
 
-/** Echo tool - echoes back the input message.
-  *
-  * This demonstrates a simple tool with string input and output, using automatic schema derivation from Scaladoc comments.
-  */
 object EchoTool {
 
-  @description("Input for echo operation")
-  case class Input(
-      @description("The message to echo back")
-      message: String
-  ) derives Codec.AsObject
-  object Input {
-    given McpSchema[Input] = McpSchema.derived
-  }
+  type Input = (message: String, prefix: Option[String])
+  given InputDef[Input] = InputDef[Input](
+    message = InputField[String]("The message to echo back"),
+    prefix = InputField[Option[String]]("Optional prefix to add")
+  )
 
   // Echo icon: arrow pointing left (symbolizing echo/return)
   // Original: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l-7-7 7-7M19 12H5"/></svg>
@@ -42,6 +34,7 @@ object EchoTool {
         )
       )
     ) { (input, _) =>
-      Async[F].pure(List(Content.Text(s"Echo: ${input.message}")))
+      val pre = input.prefix.getOrElse("Echo")
+      Async[F].pure(List(Content.Text(s"$pre: ${input.message}")))
     }
 }
