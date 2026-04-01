@@ -27,7 +27,7 @@ object Publish extends BleepScript("Publish") {
       logger = started.logger,
       sonatypeBundleDirectory = started.buildPaths.dotBleepDir / "sonatype-bundle",
       sonatypeProfileName = "com.github.ingarabr",
-      bundleName = "typo",
+      bundleName = "scala-mcp-sdk",
       version = dynVer.version
     )
     val ciRelease = new CiReleasePlugin(started.logger, sonatype, dynVer, pgp)
@@ -36,7 +36,7 @@ object Publish extends BleepScript("Publish") {
 
     val info = Info(
       "Scala MCP",
-      "https://github.com/ingarabr/scala-mcp/",
+      "https://github.com/ingarabr/scala-mcp-sdk/",
       List(
         Info.Developer(
           "ingarabr",
