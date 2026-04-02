@@ -11,11 +11,12 @@ the [MCP prompts documentation](https://modelcontextprotocol.io/docs/concepts/pr
 
 Each prompt has:
 
-| Field         | Required | Description          |
-|---------------|----------|----------------------|
-| `name`        | Yes      | Unique identifier    |
-| `description` | No       | What the prompt does |
-| `arguments`   | No       | Expected parameters  |
+| Field         | Required | Description                                              |
+|---------------|----------|----------------------------------------------------------|
+| `name`        | Yes      | Unique identifier                                        |
+| `description` | No       | What the prompt does                                     |
+| `title`       | No       | Display title (if not provided, `name` is used)          |
+| `arguments`   | No       | Expected parameters                                     |
 
 ## Basic Example
 

@@ -7,7 +7,7 @@ import fs2.Stream
 import io.circe.*
 import io.circe.syntax.*
 import mcp.protocol.*
-import mcp.server.{McpServer, Transport}
+import mcp.server.{InputDef, InputField, McpServer, TaskMode, ToolDef, Transport}
 import munit.CatsEffectSuite
 import examples.tools.EchoTool
 
@@ -93,10 +93,46 @@ class TasksSuite extends CatsEffectSuite {
     } yield ()
   }
 
+  // Echo tool that supports task-augmented execution (client can choose sync or async)
+  type TaskEchoInput = (message: String, uppercase: Option[Boolean])
+  given InputDef[TaskEchoInput] = InputDef[TaskEchoInput](
+    message = InputField[String]("The message to echo back"),
+    uppercase = InputField[Option[Boolean]]("Whether to uppercase")
+  )
+
+  def asyncAllowedTool: ToolDef[IO, TaskEchoInput, Nothing] =
+    ToolDef.unstructured[IO, TaskEchoInput](
+      name = "async-allowed-echo",
+      description = Some("Echo with optional task support"),
+      taskMode = TaskMode.AsyncAllowed
+    ) { (input, _) =>
+      IO.pure(List(Content.Text(s"Echo: ${input.message}")))
+    }
+
+  // Echo tool that requires task-augmented execution
+  def asyncOnlyTool: ToolDef[IO, TaskEchoInput, Nothing] =
+    ToolDef.unstructured[IO, TaskEchoInput](
+      name = "async-only-echo",
+      description = Some("Echo that requires tasks"),
+      taskMode = TaskMode.AsyncOnly
+    ) { (input, _) =>
+      IO.pure(List(Content.Text(s"Echo: ${input.message}")))
+    }
+
+  // Tool that always returns isError = true
+  def failingTool: ToolDef[IO, TaskEchoInput, Nothing] =
+    ToolDef.unstructured[IO, TaskEchoInput](
+      name = "failing-tool",
+      description = Some("Tool that returns an error result"),
+      taskMode = TaskMode.AsyncAllowed
+    ) { (_, _) =>
+      IO.raiseError(new RuntimeException("Something went wrong"))
+    }
+
   test("server with tasks enabled should advertise tasks capability") {
     val serverResource = McpServer[IO](
       info = Implementation("test-server", "1.0.0"),
-      tools = List(EchoTool[IO]),
+      tools = List(asyncAllowedTool),
       tasksEnabled = true
     )
 
@@ -158,13 +194,13 @@ class TasksSuite extends CatsEffectSuite {
   test("task-augmented tools/call should return CreateTaskResult") {
     val serverResource = McpServer[IO](
       info = Implementation("test-server", "1.0.0"),
-      tools = List(EchoTool[IO]),
+      tools = List(asyncAllowedTool),
       tasksEnabled = true
     )
 
     withServer(serverResource) { (serverToClient, clientToServer) =>
       val callRequest = JsonObject(
-        "name" -> Json.fromString("echo"),
+        "name" -> Json.fromString("async-allowed-echo"),
         "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
         "task" -> Json.obj("ttl" -> Json.fromLong(60000L))
       )
@@ -232,13 +268,13 @@ class TasksSuite extends CatsEffectSuite {
   test("tasks/cancel should cancel a running task") {
     val serverResource = McpServer[IO](
       info = Implementation("test-server", "1.0.0"),
-      tools = List(EchoTool[IO]),
+      tools = List(asyncAllowedTool),
       tasksEnabled = true
     )
 
     withServer(serverResource) { (serverToClient, clientToServer) =>
       val callRequest = JsonObject(
-        "name" -> Json.fromString("echo"),
+        "name" -> Json.fromString("async-allowed-echo"),
         "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
         "task" -> Json.obj()
       )
@@ -319,6 +355,272 @@ class TasksSuite extends CatsEffectSuite {
             assert(err.message.contains("not enabled"), s"Should report tasks not enabled: ${err.message}")
           case other =>
             fail(s"Expected Error, got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  // === TaskMode enforcement tests ===
+
+  test("SyncOnly tool rejects task params with METHOD_NOT_FOUND") {
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(EchoTool[IO]),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = JsonObject(
+        "name" -> Json.fromString("echo"),
+        "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
+        "task" -> Json.obj()
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
+        _ = response match {
+          case JsonRpcResponse.Error(_, _, err) =>
+            assertEquals(err.code, Constants.METHOD_NOT_FOUND, s"Should use METHOD_NOT_FOUND error code")
+            assert(
+              err.message.contains("does not support task-augmented execution"),
+              s"Should explain rejection: ${err.message}"
+            )
+          case other =>
+            fail(s"Expected Error, got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  test("AsyncOnly tool rejects non-task calls with METHOD_NOT_FOUND") {
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(asyncOnlyTool),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = CallToolRequest(
+        name = "async-only-echo",
+        arguments = Some(JsonObject("message" -> Json.fromString("Hello!")))
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
+        _ = response match {
+          case JsonRpcResponse.Error(_, _, err) =>
+            assertEquals(err.code, Constants.METHOD_NOT_FOUND, s"Should use METHOD_NOT_FOUND error code")
+            assert(
+              err.message.contains("requires task-augmented execution"),
+              s"Should explain rejection: ${err.message}"
+            )
+          case other =>
+            fail(s"Expected Error, got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  test("AsyncAllowed tool works without task params (sync mode)") {
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(asyncAllowedTool),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = CallToolRequest(
+        name = "async-allowed-echo",
+        arguments = Some(JsonObject("message" -> Json.fromString("Hello!")))
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val toolResult = result.asJson.as[CallToolResult]
+            assert(toolResult.isRight, s"Should succeed without task params: $toolResult")
+            toolResult.toOption.foreach { callResult =>
+              assertEquals(callResult.isError, Some(false))
+            }
+          case other =>
+            fail(s"Expected Response, got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  test("server without tasks ignores task params and executes normally") {
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(EchoTool[IO]),
+      tasksEnabled = false
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = JsonObject(
+        "name" -> Json.fromString("echo"),
+        "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
+        "task" -> Json.obj("ttl" -> Json.fromLong(5000L))
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val toolResult = result.asJson.as[CallToolResult]
+            assert(toolResult.isRight, s"Should execute normally ignoring task params: $toolResult")
+            toolResult.toOption.foreach { callResult =>
+              assertEquals(callResult.isError, Some(false))
+              val textContent = callResult.content.head.asInstanceOf[Content.Text].text
+              assert(textContent.contains("Echo: Hello!"), s"Should have executed the tool: $textContent")
+            }
+          case other =>
+            fail(s"Expected Response (task params should be ignored), got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  test("tool error (isError=true) sets task status to failed") {
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(failingTool),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = JsonObject(
+        "name" -> Json.fromString("failing-tool"),
+        "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
+        "task" -> Json.obj()
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
+        taskId <- IO {
+          response match {
+            case JsonRpcResponse.Response(_, _, result) =>
+              result.asJson.as[CreateTaskResult].toOption.map(_.task.taskId).getOrElse(fail("No taskId"))
+            case other =>
+              fail(s"Expected Response, got: $other")
+          }
+        }
+
+        // Wait for task to complete
+        _ <- IO.sleep(200.millis)
+
+        // Poll tasks/get — should be failed
+        getRequest = GetTaskRequest(taskId = taskId)
+        getResponse <- sendRequest(clientToServer, serverToClient, "tasks/get", Some(getRequest.asJsonObject), "test-2")
+        _ = getResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val getResult = result.asJson.as[GetTaskResult]
+            getResult.toOption match {
+              case Some(res) =>
+                assertEquals(res.task.status, TaskStatus.failed, "Task should be failed when tool returns isError=true")
+              case None =>
+                fail(s"Failed to decode GetTaskResult from: $result")
+            }
+          case other =>
+            fail(s"Expected Response, got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  test("tasks/result blocks until task completes") {
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(asyncAllowedTool),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = JsonObject(
+        "name" -> Json.fromString("async-allowed-echo"),
+        "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
+        "task" -> Json.obj()
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
+        taskId <- IO {
+          response match {
+            case JsonRpcResponse.Response(_, _, result) =>
+              result.asJson.as[CreateTaskResult].toOption.map(_.task.taskId).getOrElse(fail("No taskId"))
+            case other =>
+              fail(s"Expected Response, got: $other")
+          }
+        }
+
+        // Call tasks/result — should block and return the result once task completes
+        resultRequest = GetTaskResultRequest(taskId = taskId)
+        resultResponse <- sendRequest(
+          clientToServer,
+          serverToClient,
+          "tasks/result",
+          Some(resultRequest.asJsonObject),
+          "test-2"
+        )
+        _ = resultResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val meta = result("_meta").flatMap(_.asObject)
+            assert(meta.isDefined, "Result should have _meta with related-task")
+            val content = result("content").flatMap(_.asArray)
+            assert(content.isDefined, "Result should have content")
+          case other =>
+            fail(s"Expected Response, got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  test("tasks/result returns result for failed tasks") {
+    val serverResource = McpServer[IO](
+      info = Implementation("test-server", "1.0.0"),
+      tools = List(failingTool),
+      tasksEnabled = true
+    )
+
+    withServer(serverResource) { (serverToClient, clientToServer) =>
+      val callRequest = JsonObject(
+        "name" -> Json.fromString("failing-tool"),
+        "arguments" -> Json.obj("message" -> Json.fromString("Hello!")),
+        "task" -> Json.obj()
+      )
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
+        taskId <- IO {
+          response match {
+            case JsonRpcResponse.Response(_, _, result) =>
+              result.asJson.as[CreateTaskResult].toOption.map(_.task.taskId).getOrElse(fail("No taskId"))
+            case other =>
+              fail(s"Expected Response, got: $other")
+          }
+        }
+
+        // Wait for task to fail
+        _ <- IO.sleep(200.millis)
+
+        // tasks/result should return the error result, not a protocol error
+        resultRequest = GetTaskResultRequest(taskId = taskId)
+        resultResponse <- sendRequest(
+          clientToServer,
+          serverToClient,
+          "tasks/result",
+          Some(resultRequest.asJsonObject),
+          "test-2"
+        )
+        _ = resultResponse match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val meta = result("_meta").flatMap(_.asObject)
+            assert(meta.isDefined, "Failed task result should have _meta with related-task")
+            val content = result("content").flatMap(_.asArray)
+            assert(content.isDefined, "Failed task result should have content with error message")
+          case other =>
+            fail(s"Expected Response with error result, got: $other")
         }
       } yield ()
     }

@@ -33,7 +33,47 @@ McpServer[IO](
 )
 ```
 
-That's it. The server advertises task support in its capabilities, and any tool call that includes a `task` parameter will automatically run as a background task.
+This enables the task system at the server level. Individual tools then declare whether they support async execution via `taskMode`.
+
+## Per-Tool Task Mode
+
+Each tool declares its async execution mode using `TaskMode`:
+
+| `TaskMode`       | Behavior | MCP spec value |
+|------------------|----------|----------------|
+| `SyncOnly`       | Tool must complete in the request. Task-augmented calls are rejected. | `execution.taskSupport = "forbidden"` (default) |
+| `AsyncAllowed`   | Client can choose sync or async. Works both ways. | `execution.taskSupport = "optional"` |
+| `AsyncOnly`      | Tool must be called as a task. Sync calls are rejected. | `execution.taskSupport = "required"` |
+
+The default is `SyncOnly` — most tools complete quickly and don't need async support.
+
+```scala mdoc:compile-only
+import cats.effect.IO
+import mcp.protocol.Content
+import mcp.server.*
+
+type DeployInput = (service: String, version: String)
+given InputDef[DeployInput] = InputDef[DeployInput](
+  service = InputField[String]("Service name"),
+  version = InputField[String]("Version to deploy")
+)
+
+val deployTool = ToolDef.unstructured[IO, DeployInput](
+  name = "deploy",
+  description = Some("Deploy a service (may take several minutes)"),
+  taskMode = TaskMode.AsyncAllowed
+) { (input, ctx) =>
+  IO.pure(List(Content.Text(s"Deployed ${input.service} v${input.version}")))
+}
+```
+
+**When to use which:**
+
+- `SyncOnly` — fast operations: lookups, calculations, simple mutations
+- `AsyncAllowed` — operations that may be slow but can also complete quickly
+- `AsyncOnly` — operations that always take a long time: batch processing, deployments
+
+The library enforces these modes. A `SyncOnly` tool rejects task-augmented calls, and an `AsyncOnly` tool rejects synchronous calls. If the server doesn't have `tasksEnabled = true`, task parameters are silently ignored per the MCP spec.
 
 ## Task Configuration
 

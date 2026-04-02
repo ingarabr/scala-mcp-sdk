@@ -32,6 +32,7 @@ final case class ToolDef[F[_], Input, Output] private (
     name: String,
     description: Option[String],
     handler: (Input, ToolContext[F]) => F[ToolOutput[Output]],
+    taskMode: TaskMode = TaskMode.SyncOnly,
     annotations: Option[ToolAnnotations] = None,
     icons: Option[List[Icon]] = None
 )(using
@@ -46,6 +47,7 @@ final case class ToolDef[F[_], Input, Output] private (
       description = description,
       inputSchema = inputSchema.jsonSchema,
       outputSchema = outputSchema.map(_.jsonSchema),
+      execution = taskMode.toExecution,
       annotations = annotations,
       icons = icons
     )
@@ -113,6 +115,7 @@ object ToolDef {
   def unstructured[F[_], Input](
       name: String,
       description: Option[String] = None,
+      taskMode: TaskMode = TaskMode.SyncOnly,
       annotations: Option[ToolAnnotations] = None,
       icons: Option[List[Icon]] = None
   )(handler: (Input, ToolContext[F]) => F[List[Content]])(using
@@ -123,6 +126,7 @@ object ToolDef {
       name = name,
       description = description,
       handler = (input, ctx) => F.map(handler(input, ctx))(ToolOutput.Unstructured(_)),
+      taskMode = taskMode,
       annotations = annotations,
       icons = icons
     )(using schema, None)
@@ -131,6 +135,7 @@ object ToolDef {
   def structured[F[_], Input, Output](
       name: String,
       description: Option[String] = None,
+      taskMode: TaskMode = TaskMode.SyncOnly,
       annotations: Option[ToolAnnotations] = None,
       icons: Option[List[Icon]] = None
   )(handler: (Input, ToolContext[F]) => F[Output])(using
@@ -142,6 +147,7 @@ object ToolDef {
       name = name,
       description = description,
       handler = (input, ctx) => F.map(handler(input, ctx))(ToolOutput.Structured(_)),
+      taskMode = taskMode,
       annotations = annotations,
       icons = icons
     )(using inputSchema, Some(outputSchema))
@@ -406,6 +412,7 @@ case class PromptDef[F[_], Args](
     name: String,
     description: Option[String],
     arguments: List[PromptArgument],
+    title: Option[String] = None,
     icons: Option[List[Icon]] = None,
     handler: Args => F[List[PromptMessage]]
 )(using val argsDecoder: Decoder[Args]) {
@@ -416,6 +423,7 @@ case class PromptDef[F[_], Args](
       name = name,
       description = description,
       arguments = if arguments.isEmpty then None else Some(arguments),
+      title = title,
       icons = icons
     )
 
@@ -486,6 +494,7 @@ object PromptDef {
   def derived[F[_], Args](
       name: String,
       description: Option[String] = None,
+      title: Option[String] = None,
       icons: Option[List[Icon]] = None
   )(handler: Args => F[List[PromptMessage]])(using schema: InputSchema[Args]): PromptDef[F, Args] = {
     val arguments = extractArguments(schema.jsonSchema)
@@ -493,6 +502,7 @@ object PromptDef {
       name = name,
       description = description,
       arguments = arguments,
+      title = title,
       icons = icons,
       handler = handler
     )(using schema.decoder)

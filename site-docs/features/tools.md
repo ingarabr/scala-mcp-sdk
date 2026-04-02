@@ -13,12 +13,14 @@ available tools and decides when to invoke them based on context.
 
 Each tool has:
 
-| Field         | Required | Description                                 |
-|---------------|----------|---------------------------------------------|
-| `name`        | Yes      | Unique identifier                           |
-| `description` | No       | Human-readable description of functionality |
-| `inputSchema` | Auto     | JSON Schema derived from InputDef           |
-| `annotations` | No       | Hints about tool behavior                   |
+| Field          | Required | Description                                      |
+|----------------|----------|--------------------------------------------------|
+| `name`         | Yes      | Unique identifier                                |
+| `description`  | No       | Human-readable description of functionality      |
+| `inputSchema`  | Auto     | JSON Schema derived from InputDef                |
+| `outputSchema` | Auto     | JSON Schema derived from OutputDef (structured only) |
+| `taskMode`     | No       | Async execution mode (`SyncOnly`, `AsyncAllowed`, `AsyncOnly`) |
+| `annotations`  | No       | Hints about tool behavior                        |
 
 ## Basic Example
 
@@ -157,6 +159,50 @@ IO.pure(List(
   Content.Image(chartData, "image/png")
 ))
 ```
+
+## Structured Output
+
+When a tool returns typed data with a fixed schema, use `ToolDef.structured` instead of `ToolDef.unstructured`.
+This advertises an `outputSchema` in the tool listing and populates `structuredContent` in the response,
+allowing clients to programmatically parse results.
+
+```scala mdoc:compile-only
+import cats.effect.IO
+import io.circe.*
+import mcp.protocol.{JsonSchemaType, ToolAnnotations}
+import mcp.server.*
+
+type AddInput = (a: Double, b: Double)
+given InputDef[AddInput] = InputDef[AddInput](
+  a = InputField[Double]("First number"),
+  b = InputField[Double]("Second number")
+)
+
+case class AddOutput(result: Double) derives Codec.AsObject
+given OutputDef[AddOutput] = OutputDef.raw(
+  JsonSchemaType.ObjectSchema(
+    properties = Some(Map(
+      "result" -> JsonSchemaType.NumberSchema(description = Some("Sum of the two numbers"))
+    )),
+    required = Some(List("result"))
+  ),
+  summon[Encoder.AsObject[AddOutput]]
+)
+
+val addTool = ToolDef.structured[IO, AddInput, AddOutput](
+  name = "add",
+  description = Some("Add two numbers")
+) { (input, _) =>
+  IO.pure(AddOutput(input.a + input.b))
+}
+```
+
+**When to use which:**
+
+- `ToolDef.unstructured` — returns rich content (text, images, mixed media) or dynamic output shapes
+- `ToolDef.structured` — returns typed data with a fixed schema (computation results, API responses)
+
+With structured output, the result is sent both as JSON text in `content` and as a JSON object in `structuredContent`.
 
 ## Tool Context
 

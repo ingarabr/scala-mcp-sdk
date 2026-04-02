@@ -159,6 +159,7 @@ object McpServer {
     */
   def apply[F[_]: Async](
       info: Implementation,
+      instructions: Option[String] = None,
       tools: List[ToolDef[F, _, _]] = Nil,
       resources: List[ResourceDef[F, _]] = Nil,
       resourceTemplates: List[ResourceTemplateDef[F]] = Nil,
@@ -184,6 +185,7 @@ object McpServer {
         taskRegistry <- if tasksEnabled then TaskRegistry[F](taskConfig).map(Some(_)) else Async[F].pure(None)
       } yield new McpServerImpl[F](
         serverInfo = info,
+        instructions = instructions,
         toolsRef = toolsRef,
         resourcesRef = resourcesRef,
         resourceTemplatesRef = resourceTemplatesRef,
@@ -195,6 +197,7 @@ object McpServer {
         activeTransport = activeTransport,
         inFlightRequests = inFlightRequests,
         taskRegistry = taskRegistry,
+        taskConfig = taskConfig,
         useTasksForOutgoing = useTasksForOutgoingRequests && tasksEnabled,
         shutdownTimeout = shutdownTimeout
       )
@@ -210,6 +213,7 @@ object McpServer {
   */
 private class McpServerImpl[F[_]: Async](
     val serverInfo: Implementation,
+    instructions: Option[String],
     toolsRef: Ref[F, Map[String, ToolDef[F, _, _]]],
     resourcesRef: Ref[F, Map[String, ResourceDef[F, _]]],
     resourceTemplatesRef: Ref[F, List[ResourceTemplateDef[F]]],
@@ -221,6 +225,7 @@ private class McpServerImpl[F[_]: Async](
     activeTransport: Ref[F, Option[Transport[F]]],
     inFlightRequests: Ref[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]],
     taskRegistry: Option[TaskRegistry[F]],
+    taskConfig: TaskConfig,
     useTasksForOutgoing: Boolean,
     shutdownTimeout: FiniteDuration
 ) extends McpServer[F] {
@@ -523,7 +528,8 @@ private class McpServerImpl[F[_]: Async](
               InitializeResult(
                 protocolVersion = Constants.LATEST_PROTOCOL_VERSION,
                 capabilities = capabilities,
-                serverInfo = info
+                serverInfo = info,
+                instructions = instructions
               ).asJsonObject
             )
           )
@@ -600,11 +606,30 @@ private class McpServerImpl[F[_]: Async](
           toolsMap.get(request.name) match {
             case Some(toolDef) =>
               (taskParamOpt, taskRegistry) match {
+                // Task param present and server supports tasks — enforce per-tool taskMode
                 case (Some(taskParam), Some(registry)) =>
-                  handleCallToolAsTask(request, toolDef, context, registry, taskParam)
+                  toolDef.taskMode match {
+                    case TaskMode.SyncOnly =>
+                      ErrorData(
+                        code = Constants.METHOD_NOT_FOUND,
+                        message = s"Tool '${request.name}' does not support task-augmented execution"
+                      ).asError
+                    case _ =>
+                      handleCallToolAsTask(request, toolDef, context, registry, taskParam)
+                  }
+                // No task param — enforce AsyncOnly
+                case (None, _) =>
+                  toolDef.taskMode match {
+                    case TaskMode.AsyncOnly =>
+                      ErrorData(
+                        code = Constants.METHOD_NOT_FOUND,
+                        message = s"Tool '${request.name}' requires task-augmented execution"
+                      ).asError
+                    case _ =>
+                      toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
+                  }
+                // Task param present but server doesn't support tasks — ignore task param per spec
                 case (Some(_), None) =>
-                  ErrorData(code = Constants.INVALID_PARAMS, message = "Tasks not enabled on this server").asError
-                case _ =>
                   toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
               }
             case None =>
@@ -630,8 +655,11 @@ private class McpServerImpl[F[_]: Async](
         toolDef
           .execute(request.arguments, Some(context))
           .flatMap { result =>
+            val status = if result.isError.contains(true) then TaskStatus.failed else TaskStatus.completed
+            val statusMessage =
+              if result.isError.contains(true) then result.content.collectFirst { case Content.Text(text, _, _) => text } else None
             registry.storeResult(task.taskId, result.asJson) *>
-              registry.updateStatus(task.taskId, TaskStatus.completed)
+              registry.updateStatus(task.taskId, status, statusMessage)
           }
           .handleErrorWith { error =>
             registry.updateStatus(task.taskId, TaskStatus.failed, Some(error.getMessage))
@@ -921,23 +949,42 @@ private class McpServerImpl[F[_]: Async](
       case Right(request) =>
         taskRegistry match {
           case Some(registry) =>
-            for {
-              taskOpt <- registry.get(request.taskId)
-              resultOpt <- registry.getResult(request.taskId)
-            } yield (taskOpt, resultOpt) match {
-              case (Some(task), Some(result)) if task.status == TaskStatus.completed =>
-                val metaWithTask = JsonObject(
-                  "io.modelcontextprotocol/related-task" -> Json.obj("taskId" -> request.taskId.asJson)
-                )
-                result.asObject match {
-                  case Some(obj) => Right(obj.add("_meta", metaWithTask.asJson))
-                  case None      => Right(JsonObject("result" -> result, "_meta" -> metaWithTask.asJson))
+            val pollInterval = taskConfig.defaultPollInterval
+
+            def awaitTerminal: F[Task] =
+              registry.get(request.taskId).flatMap {
+                case Some(task) if task.status.isTerminal => Async[F].pure(task)
+                case Some(_)                              => Async[F].sleep(pollInterval) *> awaitTerminal
+                case None                                 =>
+                  Async[F].raiseError(new NoSuchElementException(s"Task not found: ${request.taskId}"))
+              }
+
+            val metaWithTask = JsonObject(
+              "io.modelcontextprotocol/related-task" -> Json.obj("taskId" -> request.taskId.asJson)
+            )
+
+            awaitTerminal
+              .flatMap { task =>
+                registry.getResult(request.taskId).map { resultOpt =>
+                  resultOpt match {
+                    case Some(result) =>
+                      result.asObject match {
+                        case Some(obj) => Right(obj.add("_meta", metaWithTask.asJson))
+                        case None      => Right(JsonObject("result" -> result, "_meta" -> metaWithTask.asJson))
+                      }
+                    case None =>
+                      Left(
+                        ErrorData(
+                          code = Constants.INVALID_PARAMS,
+                          message = s"Task ${request.taskId} reached status '${task.status}' but no result available"
+                        )
+                      )
+                  }
                 }
-              case (Some(task), _) if task.status != TaskStatus.completed =>
-                Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Task not completed: ${task.status}"))
-              case _ =>
+              }
+              .recover { case _: NoSuchElementException =>
                 Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Task not found: ${request.taskId}"))
-            }
+              }
           case None =>
             ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
         }
