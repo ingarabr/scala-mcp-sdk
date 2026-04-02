@@ -16,6 +16,7 @@ deletion tool:
 
 ```scala mdoc:compile-only
 import cats.effect.Async
+import cats.syntax.all.*
 import io.circe.Codec
 import mcp.protocol.ToolAnnotations
 import mcp.server.*

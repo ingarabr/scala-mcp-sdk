@@ -89,6 +89,8 @@ projects:
       - build.bleep::bleep-plugin-mdoc:${BLEEP_VERSION}
     dependsOn:
       - server-http4s
+    scala:
+      strict: false
 
 scripts:
   publish-locally:
