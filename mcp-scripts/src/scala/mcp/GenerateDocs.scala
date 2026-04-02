@@ -23,13 +23,19 @@ object GenerateDocs extends BleepScript("Docs") {
 
     val dynVer = new DynVerPlugin(baseDirectory = started.buildPaths.buildDir.toFile, dynverSonatypeSnapshots = true)
 
+    // Use the current tag version, or fall back to the last stable tag for snapshot builds.
+    // This ensures docs always reference a published version available on Maven Central.
+    val docsVersion =
+      if dynVer.isSnapshot then dynVer.previousStableVersion.getOrElse(dynVer.version)
+      else dynVer.version
+
     val mdoc = new MdocPlugin(started, scriptsProject, mdocVersion = "2.8.2") {
       override def mdocIn: Path = started.buildPaths.buildDir / "site-docs"
 
       override def mdocOut: Path = started.buildPaths.buildDir / "site" / "docs"
 
       override def mdocVariables: Map[String, String] =
-        Map("VERSION" -> dynVer.version)
+        Map("VERSION" -> docsVersion)
 
       override def getVersionCombo(explodedProject: model.Project): model.VersionCombo.Scala =
         mdocScalaVersionCombo
@@ -72,6 +78,9 @@ object GenerateDocs extends BleepScript("Docs") {
       case Some("dev") =>
         docusaurus.dev(using started.executionContext)
       case Some("deploy") =>
+        if dynVer.isSnapshot && dynVer.previousStableVersion.isEmpty then
+          sys.error(s"Cannot deploy docs: no release tag found. Create a release tag first.")
+        started.logger.info(s"Deploying docs with version: $docsVersion")
         docusaurus.docusaurusPublishGhpages(mdocArgs = Nil)
       case Some(other) =>
         sys.error(s"Expected argument to be dev or deploy, not $other")
