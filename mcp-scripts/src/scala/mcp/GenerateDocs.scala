@@ -1,6 +1,7 @@
 package mcp
 
 import bleep.*
+import bleep.plugin.dynver.DynVerPlugin
 import bleep.plugin.mdoc.{DocusaurusPlugin, MdocPlugin}
 import coursier.core.{ModuleName, Organization}
 
@@ -20,13 +21,15 @@ object GenerateDocs extends BleepScript("Docs") {
     val projectScalaVersion = explodedProject.scala.flatMap(_.version).map(_.scalaVersion).getOrElse("3.7.3")
     val mdocScalaVersionCombo = model.VersionCombo.Jvm(model.VersionScala(projectScalaVersion))
 
+    val dynVer = new DynVerPlugin(baseDirectory = started.buildPaths.buildDir.toFile, dynverSonatypeSnapshots = true)
+
     val mdoc = new MdocPlugin(started, scriptsProject, mdocVersion = "2.8.2") {
       override def mdocIn: Path = started.buildPaths.buildDir / "site-docs"
 
       override def mdocOut: Path = started.buildPaths.buildDir / "site" / "docs"
 
       override def mdocVariables: Map[String, String] =
-        Map.empty
+        Map("VERSION" -> dynVer.version)
 
       override def getVersionCombo(explodedProject: model.Project): model.VersionCombo.Scala =
         mdocScalaVersionCombo

@@ -8,6 +8,12 @@ sidebar_position: 1
 
 If you're new to MCP, start with the [official specification](https://modelcontextprotocol.io/docs/concepts/architecture) to understand the protocol concepts.
 
+## Why This Library?
+
+When this project started, there was no MCP SDK that integrated well with the Scala ecosystem. The existing options were Java-centric and didn't compose naturally with [Cats Effect](https://typelevel.org/cats-effect/), [fs2](https://fs2.io/), or [http4s](https://http4s.org/).
+
+scala-mcp-sdk was built to fill that gap — a protocol library that feels native to the Typelevel stack and makes it straightforward to add MCP support to both stdio tools and existing http4s services.
+
 ## What This Library Provides
 
 - **Protocol types** - Generated from the MCP JSON Schema

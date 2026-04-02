@@ -6,15 +6,18 @@ sidebar_position: 2
 
 Build your first MCP server in Scala.
 
+:::tip New to Cats Effect?
+If you're coming from Java/Kotlin or haven't used the Typelevel stack before, read [Key Concepts](./concepts.md) first — it covers `IO`, `Resource`, and other patterns used throughout this guide.
+:::
+
 ## Installation
+
+Requires **Scala 3.7+**.
 
 Add the dependencies to your build:
 
 ```scala title="build.sbt"
-libraryDependencies ++= Seq(
-  "io.github.ingarabr" %% "scala-mcp-server" % "<version>",
-  "io.github.ingarabr" %% "scala-mcp-transport-stdio" % "<version>"
-)
+libraryDependencies += "com.github.ingarabr.mcp" %% "server" % "@VERSION@"
 ```
 
 Or with Bleep:
@@ -22,8 +25,7 @@ Or with Bleep:
 ```yaml
 # bleep.yaml
 dependencies:
-  - io.github.ingarabr::scala-mcp-server:<version>
-  - io.github.ingarabr::scala-mcp-transport-stdio:<version>
+  - com.github.ingarabr.mcp::server:@VERSION@
 ```
 
 Or with Mill:
@@ -32,13 +34,14 @@ Or with Mill:
 import mill._, scalalib._
 
 object myserver extends ScalaModule {
-  def scalaVersion = "3.3.4"
+  def scalaVersion = "3.7.3"
   def ivyDeps = Agg(
-    ivy"io.github.ingarabr::scala-mcp-server:<version>",
-    ivy"io.github.ingarabr::scala-mcp-transport-stdio:<version>"
+    ivy"com.github.ingarabr.mcp::server:@VERSION@"
   )
 }
 ```
+
+The `server` module includes stdio transport. For HTTP transport, also add `server-http4s`.
 
 ## Your First Server
 
@@ -86,6 +89,22 @@ object MyServer extends IOApp.Simple {
 4. **`StdioTransport[IO]()`** - Creates a stdio transport resource
 5. **`server.serve(transport)`** - Connects them together
 6. **`.useForever`** - Runs until interrupted
+
+## Running Your Server
+
+With sbt:
+
+```bash
+sbt run
+```
+
+With scala-cli (single file):
+
+```bash
+scala-cli run MyServer.scala
+```
+
+Your server is now listening on stdin/stdout for MCP messages.
 
 ## Testing with MCP Inspector
 

@@ -59,6 +59,11 @@ const config = {
             label: 'Docs',
           },
           {
+            href: 'https://javadoc.io/doc/com.github.ingarabr.mcp/server_3/latest',
+            label: 'API Reference',
+            position: 'left',
+          },
+          {
             href: 'https://github.com/ingarabr/scala-mcp-sdk',
             label: 'GitHub',
             position: 'right',

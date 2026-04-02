@@ -5,6 +5,8 @@ const sidebars = {
   docsSidebar: [
     'intro',
     'getting-started',
+    'concepts',
+    'coming-from-ts-python',
     {
       type: 'category',
       label: 'Features',
@@ -30,6 +32,15 @@ const sidebars = {
         'advanced/sampling',
         'advanced/elicitation',
         'advanced/roots',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Advanced',
+      items: [
+        'advanced/dynamic-primitives',
+        'advanced/tasks',
+        'advanced/logging',
       ],
     },
     'contributing',

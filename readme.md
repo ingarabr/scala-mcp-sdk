@@ -3,6 +3,7 @@
 A pure Scala 3 implementation of the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue.svg)](https://modelcontextprotocol.io/specification/2025-11-25)
 
 ## Overview
 
@@ -65,8 +66,8 @@ object MyServer extends IOApp.Simple:
 ```scala
 // build.sbt
 libraryDependencies ++= Seq(
-  "io.github.ingarabr" %% "scala-mcp-server" % "<version>",
-  "io.github.ingarabr" %% "scala-mcp-server-http4s" % "<version>" // for HTTP transport
+  "com.github.ingarabr.mcp" %% "server" % "<version>",
+  "com.github.ingarabr.mcp" %% "server-http4s" % "<version>" // for HTTP transport
 )
 ```
 

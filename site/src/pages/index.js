@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
+import CodeBlock from '@theme/CodeBlock';
 import styles from './index.module.css';
 
 function HomepageHeader() {
@@ -12,6 +13,17 @@ function HomepageHeader() {
       <div className="container">
         <h1 className="hero__title">{siteConfig.title}</h1>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
+        <p>
+          <a href="https://central.sonatype.com/artifact/com.github.ingarabr.mcp/server_3">
+            <img
+              src="https://img.shields.io/maven-central/v/com.github.ingarabr.mcp/server_3?style=flat-square&label=latest"
+              alt="Maven Central"
+            />
+          </a>
+        </p>
+        <p style={{margin: '0.5rem 0'}}>
+          Implements <a href="https://modelcontextprotocol.io/specification/2025-11-25">MCP specification 2025-11-25</a>
+        </p>
         <div className={styles.buttons}>
           <Link
             className="button button--primary button--lg"
@@ -69,15 +81,15 @@ function HomepageFeatures() {
   );
 }
 
-function HomepageExample() {
-  return (
-    <section className={styles.example}>
-      <div className="container">
-        <h2>Quick Example</h2>
-        <pre className={styles.codeBlock}>
-{`import cats.effect.*
+const exampleCode = `import cats.effect.*
 import mcp.protocol.*
 import mcp.server.*
+
+type GreetInput = (name: String, formal: Option[Boolean])
+given InputDef[GreetInput] = InputDef[GreetInput](
+  name   = InputField[String]("Name to greet"),
+  formal = InputField[Option[Boolean]]("Use formal greeting")
+)
 
 object MyServer extends IOApp.Simple:
   val greetTool = ToolDef.unstructured[IO, GreetInput](
@@ -95,8 +107,16 @@ object MyServer extends IOApp.Simple:
       )
       transport <- StdioTransport[IO]()
       _ <- server.serve(transport)
-    yield ()).useForever`}
-        </pre>
+    yield ()).useForever`;
+
+function HomepageExample() {
+  return (
+    <section className={styles.example}>
+      <div className="container">
+        <h2>Quick Example</h2>
+        <div style={{maxWidth: '800px', margin: '0 auto'}}>
+          <CodeBlock language="scala">{exampleCode}</CodeBlock>
+        </div>
       </div>
     </section>
   );
