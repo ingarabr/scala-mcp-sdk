@@ -380,7 +380,7 @@ class TasksSuite extends CatsEffectSuite {
         response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest))
         _ = response match {
           case JsonRpcResponse.Error(_, _, err) =>
-            assertEquals(err.code, Constants.METHOD_NOT_FOUND, s"Should use METHOD_NOT_FOUND error code")
+            assertEquals(err.code, -32601, s"Should use METHOD_NOT_FOUND error code")
             assert(
               err.message.contains("does not support task-augmented execution"),
               s"Should explain rejection: ${err.message}"
@@ -409,7 +409,7 @@ class TasksSuite extends CatsEffectSuite {
         response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
         _ = response match {
           case JsonRpcResponse.Error(_, _, err) =>
-            assertEquals(err.code, Constants.METHOD_NOT_FOUND, s"Should use METHOD_NOT_FOUND error code")
+            assertEquals(err.code, -32601, s"Should use METHOD_NOT_FOUND error code")
             assert(
               err.message.contains("requires task-augmented execution"),
               s"Should explain rejection: ${err.message}"

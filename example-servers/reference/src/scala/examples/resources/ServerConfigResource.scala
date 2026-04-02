@@ -42,10 +42,12 @@ object ServerConfigResource {
       ),
       handler = _ =>
         Async[F].pure(
-          ServerConfig(
-            name = "simple-server",
-            version = "1.0.0",
-            environment = "development"
+          Some(
+            ServerConfig(
+              name = "simple-server",
+              version = "1.0.0",
+              environment = "development"
+            )
           )
         )
     )

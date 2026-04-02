@@ -118,9 +118,13 @@ Wrap the routes with http4s middleware:
 import org.http4s.server.middleware.*
 
 val mcpRoutes = McpHttpRoutes.routes[IO](server, sessionManager, enableSessions = true)
-val withCors = CORS.policy.withAllowOriginAll(mcpRoutes)
+val withCors = CORS.policy.withAllowOriginHost(Set("example.com"))(mcpRoutes)
 val app = Router("/mcp" -> withCors).orNotFound
 ```
+
+:::caution
+Do not use `withAllowOriginAll` — the MCP spec requires Origin validation to prevent DNS rebinding and CSRF attacks, especially for locally-running servers.
+:::
 
 ## Resource Subscriptions
 
@@ -148,6 +152,12 @@ val corsConfig = CORS.policy
 
 val corsRoutes = corsConfig(mcpRoutes)
 ```
+
+## Protocol Headers
+
+After initialization, clients must include the `MCP-Protocol-Version` header on all HTTP requests. The server enforces this — requests without the header after initialization are rejected.
+
+The `Mcp-Session-Id` header is required when sessions are enabled (the default). The server returns this header in the initialize response.
 
 ## Production Considerations
 

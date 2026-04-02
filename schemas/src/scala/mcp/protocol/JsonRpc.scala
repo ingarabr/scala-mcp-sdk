@@ -37,13 +37,42 @@ type Cursor = String
 object Constants {
   val JSONRPC_VERSION = "2.0"
   val LATEST_PROTOCOL_VERSION = "2025-11-25"
+}
+
+/** Factory methods for MCP and JSON-RPC error codes.
+  *
+  * Standard JSON-RPC codes: parseError, invalidRequest, methodNotFound, invalidParams, internalError. MCP-specific codes: resourceNotFound,
+  * urlElicitationRequired, userRejected.
+  */
+object McpError {
 
   // Standard JSON-RPC error codes
-  val PARSE_ERROR = -32700
-  val INVALID_REQUEST = -32600
-  val METHOD_NOT_FOUND = -32601
-  val INVALID_PARAMS = -32602
-  val INTERNAL_ERROR = -32603
+
+  def parseError(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -32700, message = message, data = data)
+
+  def invalidRequest(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -32600, message = message, data = data)
+
+  def methodNotFound(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -32601, message = message, data = data)
+
+  def invalidParams(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -32602, message = message, data = data)
+
+  def internalError(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -32603, message = message, data = data)
+
+  // MCP-specific error codes
+
+  def resourceNotFound(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -32002, message = message, data = data)
+
+  def urlElicitationRequired(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -32042, message = message, data = data)
+
+  def userRejected(message: String, data: Option[Json] = None): ErrorData =
+    ErrorData(code = -1, message = message, data = data)
 }
 
 /** Messages from client to server (requests and notifications). */

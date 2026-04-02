@@ -32,7 +32,7 @@ object LanguageCompletion {
   def apply[F[_]: Async]: CompletionDef[F] =
     CompletionDef.forPrompt[F](
       promptName = "translate",
-      handler = { (argName, currentValue) =>
+      handler = { (argName, currentValue, _) =>
         Async[F].pure {
           if argName == "language" then {
             val matches = languages

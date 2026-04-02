@@ -21,7 +21,7 @@ object FilePathCompletion {
   def apply[F[_]: Async](baseDir: Path = Paths.get(".")): CompletionDef[F] =
     CompletionDef.forResourceTemplate[F](
       uriTemplate = template,
-      handler = { (varName, currentValue) =>
+      handler = { (varName, currentValue, _) =>
         Async[F].delay {
           if varName == "path" then {
             val completions = listPathCompletions(baseDir, currentValue)

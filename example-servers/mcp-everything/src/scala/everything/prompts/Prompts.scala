@@ -66,7 +66,7 @@ object ArgumentsPromptCompletion {
   def apply[F[_]: Async]: CompletionDef[F] =
     CompletionDef.forPrompt[F](
       promptName = "arguments-prompt",
-      handler = (argName, value) =>
+      handler = (argName, value, _) =>
         Async[F].pure {
           argName match {
             case "style" =>

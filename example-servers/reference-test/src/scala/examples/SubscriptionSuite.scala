@@ -65,7 +65,7 @@ class SubscriptionSuite extends CatsEffectSuite {
     ResourceDef[IO, String](
       uri = "test://resource",
       name = "Test Resource",
-      handler = _ => IO.pure("test content"),
+      handler = _ => IO.pure(Some("test content")),
       updates = updatesTopic.subscribe(100).void
     )
 

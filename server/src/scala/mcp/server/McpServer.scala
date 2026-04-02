@@ -182,6 +182,7 @@ object McpServer {
         connectionState <- Ref.of[F, ConnectionState](ConnectionState.Uninitialized)
         activeTransport <- Ref.of[F, Option[Transport[F]]](None)
         inFlightRequests <- Ref.of[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]](Map.empty)
+        initRequestId <- Ref.of[F, Option[RequestId]](None)
         taskRegistry <- if tasksEnabled then TaskRegistry[F](taskConfig).map(Some(_)) else Async[F].pure(None)
       } yield new McpServerImpl[F](
         serverInfo = info,
@@ -196,6 +197,7 @@ object McpServer {
         connectionState = connectionState,
         activeTransport = activeTransport,
         inFlightRequests = inFlightRequests,
+        initRequestId = initRequestId,
         taskRegistry = taskRegistry,
         taskConfig = taskConfig,
         useTasksForOutgoing = useTasksForOutgoingRequests && tasksEnabled,
@@ -224,6 +226,7 @@ private class McpServerImpl[F[_]: Async](
     connectionState: Ref[F, ConnectionState],
     activeTransport: Ref[F, Option[Transport[F]]],
     inFlightRequests: Ref[F, Map[RequestId, Fiber[F, Throwable, Option[JsonRpcResponse]]]],
+    initRequestId: Ref[F, Option[RequestId]],
     taskRegistry: Option[TaskRegistry[F]],
     taskConfig: TaskConfig,
     useTasksForOutgoing: Boolean,
@@ -315,7 +318,9 @@ private class McpServerImpl[F[_]: Async](
   private def handleMessage(message: JsonRpcRequest, transport: Transport[F]): F[Option[JsonRpcResponse]] =
     message match {
       case JsonRpcRequest.Request(jsonrpc, id, method, params) =>
-        trackRequest(id) {
+        // Record initialize request ID so it cannot be cancelled (per spec)
+        val recordInit = if method == "initialize" then initRequestId.set(Some(id)) else Async[F].unit
+        recordInit *> trackRequest(id) {
           handleRequest(method, params, transport)
             .map {
               case Right(result) =>
@@ -329,11 +334,7 @@ private class McpServerImpl[F[_]: Async](
                 JsonRpcResponse.Error(
                   jsonrpc,
                   Some(id),
-                  ErrorData(
-                    code = Constants.INTERNAL_ERROR,
-                    message = error.getMessage,
-                    data = None
-                  )
+                  McpError.internalError(error.getMessage)
                 )
               )
             }
@@ -369,7 +370,7 @@ private class McpServerImpl[F[_]: Async](
         case Some(caps) =>
           handler(caps)
         case None =>
-          ErrorData(code = Constants.INTERNAL_ERROR, message = "Server not initialized").asError
+          McpError.internalError("Server not initialized").asError
       }
     }
 
@@ -428,7 +429,7 @@ private class McpServerImpl[F[_]: Async](
         withCapabilities(_ => handleGetTaskResult(params))
 
       case _ =>
-        ErrorData(code = Constants.METHOD_NOT_FOUND, message = s"Method not found: $method").asError
+        McpError.methodNotFound(s"Method not found: $method").asError
     }
 
   private def fetchRoots(transport: Transport[F]): F[Unit] =
@@ -504,7 +505,11 @@ private class McpServerImpl[F[_]: Async](
       case Right(notification) =>
         notification.requestId match {
           case Some(requestId) =>
-            inFlightRequests.get.flatMap(_.get(requestId).fold(Async[F].unit)(_.cancel))
+            // Per spec: initialize requests MUST NOT be cancelled — silently ignore
+            initRequestId.get.flatMap {
+              case Some(initId) if initId == requestId => Async[F].unit
+              case _                                   => inFlightRequests.get.flatMap(_.get(requestId).fold(Async[F].unit)(_.cancel))
+            }
           case None =>
             // No requestId - for task cancellation, use tasks/cancel instead
             Async[F].unit
@@ -535,7 +540,7 @@ private class McpServerImpl[F[_]: Async](
           )
 
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid initialize request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid initialize request: ${error.getMessage}").asError
     }
   }
 
@@ -561,11 +566,11 @@ private class McpServerImpl[F[_]: Async](
           case _ =>
             // Not initialized yet - this shouldn't happen in practice as withCapabilities should guard it,
             // but we handle it gracefully
-            ErrorData(code = Constants.INTERNAL_ERROR, message = "Cannot set log level before initialization").asError
+            McpError.internalError("Cannot set log level before initialization").asError
         }
 
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid logging/setLevel request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid logging/setLevel request: ${error.getMessage}").asError
     }
   }
 
@@ -610,10 +615,7 @@ private class McpServerImpl[F[_]: Async](
                 case (Some(taskParam), Some(registry)) =>
                   toolDef.taskMode match {
                     case TaskMode.SyncOnly =>
-                      ErrorData(
-                        code = Constants.METHOD_NOT_FOUND,
-                        message = s"Tool '${request.name}' does not support task-augmented execution"
-                      ).asError
+                      McpError.methodNotFound(s"Tool '${request.name}' does not support task-augmented execution").asError
                     case _ =>
                       handleCallToolAsTask(request, toolDef, context, registry, taskParam)
                   }
@@ -621,10 +623,7 @@ private class McpServerImpl[F[_]: Async](
                 case (None, _) =>
                   toolDef.taskMode match {
                     case TaskMode.AsyncOnly =>
-                      ErrorData(
-                        code = Constants.METHOD_NOT_FOUND,
-                        message = s"Tool '${request.name}' requires task-augmented execution"
-                      ).asError
+                      McpError.methodNotFound(s"Tool '${request.name}' requires task-augmented execution").asError
                     case _ =>
                       toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
                   }
@@ -633,11 +632,11 @@ private class McpServerImpl[F[_]: Async](
                   toolDef.execute(request.arguments, Some(context)).map(result => Right(result.asJsonObject))
               }
             case None =>
-              ErrorData(code = Constants.INVALID_PARAMS, message = s"Tool not found: ${request.name}").asError
+              McpError.invalidParams(s"Tool not found: ${request.name}").asError
           }
 
         case Left(error) =>
-          ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid tool call request: ${error.getMessage}").asError
+          McpError.invalidParams(s"Invalid tool call request: ${error.getMessage}").asError
       }
     }
   }
@@ -704,7 +703,7 @@ private class McpServerImpl[F[_]: Async](
             case Some(resourceDef) =>
               connectionState.get.flatMap { state =>
                 val context = ResourceContextImpl[F](transport, state.minLogLevel, state.rootsList)
-                resourceDef.read(context).map(result => Right(result.asJsonObject))
+                resourceDef.read(context).map(_.map(_.asJsonObject))
               }
             case None =>
               // No static match - try templates
@@ -713,7 +712,7 @@ private class McpServerImpl[F[_]: Async](
         }
 
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid read resource request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid read resource request: ${error.getMessage}").asError
     }
   }
 
@@ -728,12 +727,12 @@ private class McpServerImpl[F[_]: Async](
       def tryTemplates(remaining: List[ResourceTemplateDef[F]]): F[Either[ErrorData, JsonObject]] =
         remaining match {
           case Nil =>
-            ErrorData(code = Constants.INVALID_PARAMS, message = s"Resource not found: $uri").asError
+            McpError.resourceNotFound(s"Resource not found: $uri").asError
           case template :: rest =>
             if template.matches(uri) then {
               template.resolve(uri, context).flatMap {
                 case Some(resourceDef) =>
-                  resourceDef.read(context).map(result => Right(result.asJsonObject))
+                  resourceDef.read(context).map(_.map(_.asJsonObject))
                 case None =>
                   tryTemplates(rest)
               }
@@ -782,17 +781,11 @@ private class McpServerImpl[F[_]: Async](
           case true =>
             addSubscription(uri).as(Right(EmptyResult().asJsonObject))
           case false =>
-            ErrorData(
-              code = Constants.INVALID_PARAMS,
-              message = s"Resource not found: ${request.uri}"
-            ).asError
+            McpError.resourceNotFound(s"Resource not found: ${request.uri}").asError
         }
 
       case Left(error) =>
-        ErrorData(
-          code = Constants.INVALID_PARAMS,
-          message = s"Invalid subscribe request: ${error.getMessage}"
-        ).asError
+        McpError.invalidParams(s"Invalid subscribe request: ${error.getMessage}").asError
     }
   }
 
@@ -803,10 +796,7 @@ private class McpServerImpl[F[_]: Async](
         removeSubscription(ResourceUri(request.uri)).as(Right(EmptyResult().asJsonObject))
 
       case Left(error) =>
-        ErrorData(
-          code = Constants.INVALID_PARAMS,
-          message = s"Invalid unsubscribe request: ${error.getMessage}"
-        ).asError
+        McpError.invalidParams(s"Invalid unsubscribe request: ${error.getMessage}").asError
     }
   }
 
@@ -848,12 +838,12 @@ private class McpServerImpl[F[_]: Async](
             case Some(promptDef) =>
               promptDef.get(request.arguments).map(result => Right(result.asJsonObject))
             case None =>
-              ErrorData(code = Constants.INVALID_PARAMS, message = s"Prompt not found: ${request.name}").asError
+              McpError.invalidParams(s"Prompt not found: ${request.name}").asError
           }
         }
 
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid get prompt request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid get prompt request: ${error.getMessage}").asError
     }
   }
 
@@ -864,14 +854,14 @@ private class McpServerImpl[F[_]: Async](
         completionsRef.get.flatMap { completions =>
           findCompletionProvider(completions, request.ref) match {
             case Some(provider) =>
-              provider.complete(request.argument).map(result => Right(result.asJsonObject))
+              provider.complete(request.argument, request.context).map(result => Right(result.asJsonObject))
             case None =>
               Async[F].pure(Right(CompleteResult(completion = CompletionCompletion(values = Nil)).asJsonObject))
           }
         }
 
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid completion request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid completion request: ${error.getMessage}").asError
     }
   }
 
@@ -903,7 +893,7 @@ private class McpServerImpl[F[_]: Async](
           }
         }
       case None =>
-        ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+        McpError.methodNotFound("Tasks not enabled").asError
     }
 
   private def handleGetTask(params: Option[JsonObject]): F[Either[ErrorData, JsonObject]] = {
@@ -914,13 +904,13 @@ private class McpServerImpl[F[_]: Async](
           case Some(registry) =>
             registry.get(request.taskId).map {
               case Some(task) => Right(GetTaskResult(task = task).asJsonObject)
-              case None       => Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Task not found: ${request.taskId}"))
+              case None       => Left(McpError.invalidParams(s"Task not found: ${request.taskId}"))
             }
           case None =>
-            ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+            McpError.methodNotFound("Tasks not enabled").asError
         }
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid request: ${error.getMessage}").asError
     }
   }
 
@@ -933,13 +923,13 @@ private class McpServerImpl[F[_]: Async](
             registry.cancel(request.taskId).map {
               case Some(task) => Right(CancelTaskResult(task = task).asJsonObject)
               case None       =>
-                Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Cannot cancel task: ${request.taskId}"))
+                Left(McpError.invalidParams(s"Cannot cancel task: ${request.taskId}"))
             }
           case None =>
-            ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+            McpError.methodNotFound("Tasks not enabled").asError
         }
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid request: ${error.getMessage}").asError
     }
   }
 
@@ -973,23 +963,18 @@ private class McpServerImpl[F[_]: Async](
                         case None      => Right(JsonObject("result" -> result, "_meta" -> metaWithTask.asJson))
                       }
                     case None =>
-                      Left(
-                        ErrorData(
-                          code = Constants.INVALID_PARAMS,
-                          message = s"Task ${request.taskId} reached status '${task.status}' but no result available"
-                        )
-                      )
+                      Left(McpError.invalidParams(s"Task ${request.taskId} reached status '${task.status}' but no result available"))
                   }
                 }
               }
               .recover { case _: NoSuchElementException =>
-                Left(ErrorData(code = Constants.INVALID_PARAMS, message = s"Task not found: ${request.taskId}"))
+                Left(McpError.invalidParams(s"Task not found: ${request.taskId}"))
               }
           case None =>
-            ErrorData(code = Constants.METHOD_NOT_FOUND, message = "Tasks not enabled").asError
+            McpError.methodNotFound("Tasks not enabled").asError
         }
       case Left(error) =>
-        ErrorData(code = Constants.INVALID_PARAMS, message = s"Invalid request: ${error.getMessage}").asError
+        McpError.invalidParams(s"Invalid request: ${error.getMessage}").asError
     }
   }
 

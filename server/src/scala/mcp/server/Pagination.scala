@@ -1,6 +1,6 @@
 package mcp.server
 
-import mcp.protocol.{Constants, Cursor, ErrorData}
+import mcp.protocol.{Cursor, ErrorData, McpError}
 
 /** Configuration for list pagination.
   *
@@ -101,12 +101,11 @@ object Paginator {
       case Some(cursorValue) =>
         PaginationCursor.decode(cursorValue) match {
           case None =>
-            Left(ErrorData(code = Constants.INVALID_PARAMS, message = "Invalid cursor format"))
+            Left(McpError.invalidParams("Invalid cursor format"))
 
           case Some((cursorHash, startIndex)) =>
-            if cursorHash != currentHash then Left(ErrorData(code = Constants.INVALID_PARAMS, message = "Cursor expired: list has changed"))
-            else if startIndex < 0 || startIndex > items.size then
-              Left(ErrorData(code = Constants.INVALID_PARAMS, message = "Invalid cursor: index out of bounds"))
+            if cursorHash != currentHash then Left(McpError.invalidParams("Cursor expired: list has changed"))
+            else if startIndex < 0 || startIndex > items.size then Left(McpError.invalidParams("Invalid cursor: index out of bounds"))
             else {
               val remaining = items.drop(startIndex)
               val page = remaining.take(config.defaultPageSize)

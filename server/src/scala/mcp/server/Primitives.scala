@@ -215,7 +215,7 @@ case class ResourceDef[F[_], Output](
     size: Option[Long] = None,
     icons: Option[List[Icon]] = None,
     encoding: ResourceEncoding = ResourceEncoding.Text,
-    handler: ResourceContext[F] => F[Output],
+    handler: ResourceContext[F] => F[Option[Output]],
     updates: fs2.Stream[F, Unit] = fs2.Stream.empty
 )(using val outputEncoder: Encoder[Output]) {
 
@@ -234,52 +234,61 @@ case class ResourceDef[F[_], Output](
 
   /** Read the resource contents, handling encoding internally.
     *
+    * Returns Left with resource-not-found error if the handler returns None.
+    *
     * @param ctx
     *   Resource context providing logging and roots access
     */
-  def read(ctx: ResourceContext[F])(using F: ApplicativeError[F, Throwable]): F[ReadResourceResult] =
+  def read(ctx: ResourceContext[F])(using F: ApplicativeError[F, Throwable]): F[Either[ErrorData, ReadResourceResult]] =
     handler(ctx)
-      .map { output =>
-        encoding match {
-          case ResourceEncoding.Text =>
-            val text = outputEncoder(output).spaces2
+      .map {
+        case Some(output) =>
+          Right(encodeOutput(output))
+        case None =>
+          Left(McpError.resourceNotFound(s"Resource not found: $uri"))
+      }
+      .handleErrorWith { error =>
+        F.pure(
+          Right(
             ReadResourceResult(
               contents = List(
                 ResourceContents.Text(
                   uri = uri,
-                  text = text,
-                  mimeType = mimeType.orElse(Some("application/json"))
+                  text = s"Failed to read resource: ${error.getMessage}",
+                  mimeType = Some("text/plain")
                 )
-              )
-            )
-          case ResourceEncoding.Binary =>
-            // For binary encoding, Output should be Array[Byte]
-            val bytes = output.asInstanceOf[Array[Byte]]
-            val base64 = java.util.Base64.getEncoder.encodeToString(bytes)
-            ReadResourceResult(
-              contents = List(
-                ResourceContents.Blob(
-                  uri = uri,
-                  blob = base64,
-                  mimeType = mimeType.orElse(Some("application/octet-stream"))
-                )
-              )
-            )
-        }
-      }
-      .handleErrorWith { error =>
-        F.pure(
-          ReadResourceResult(
-            contents = List(
-              ResourceContents.Text(
-                uri = uri,
-                text = s"Failed to read resource: ${error.getMessage}",
-                mimeType = Some("text/plain")
               )
             )
           )
         )
       }
+
+  private def encodeOutput(output: Output): ReadResourceResult =
+    encoding match {
+      case ResourceEncoding.Text =>
+        val text = outputEncoder(output).spaces2
+        ReadResourceResult(
+          contents = List(
+            ResourceContents.Text(
+              uri = uri,
+              text = text,
+              mimeType = mimeType.orElse(Some("application/json"))
+            )
+          )
+        )
+      case ResourceEncoding.Binary =>
+        val bytes = output.asInstanceOf[Array[Byte]]
+        val base64 = java.util.Base64.getEncoder.encodeToString(bytes)
+        ReadResourceResult(
+          contents = List(
+            ResourceContents.Blob(
+              uri = uri,
+              blob = base64,
+              mimeType = mimeType.orElse(Some("application/octet-stream"))
+            )
+          )
+        )
+    }
 }
 
 /** A resource template definition for dynamic parameterized resources.
@@ -553,20 +562,35 @@ object PromptDef {
   * @param handler
   *   Function that takes (argument name, current value) and returns completions
   */
+/** A completion provider for prompt arguments or resource template variables.
+  *
+  * The handler receives the argument name, current value, and optional context with other argument values already provided.
+  *
+  * @tparam F
+  *   Effect type (e.g., IO)
+  * @param ref
+  *   The completion reference (prompt or resource template)
+  * @param handler
+  *   Function that takes (argument name, current value, context) and returns completions
+  */
 case class CompletionDef[F[_]](
     ref: CompletionReference,
-    handler: (String, String) => F[CompletionCompletion]
+    handler: (String, String, Option[CompletionContext]) => F[CompletionCompletion]
 ) {
 
   /** Complete an argument value.
     *
     * @param argument
     *   The argument being completed (name and current value)
+    * @param context
+    *   Optional context with other argument values already provided
     * @return
     *   Completion suggestions
     */
-  def complete(argument: CompletionArgument)(using F: ApplicativeError[F, Throwable]): F[CompleteResult] =
-    handler(argument.name, argument.value)
+  def complete(argument: CompletionArgument, context: Option[CompletionContext] = None)(using
+      F: ApplicativeError[F, Throwable]
+  ): F[CompleteResult] =
+    handler(argument.name, argument.value, context)
       .map(completion => CompleteResult(completion = completion))
       .handleError { error =>
         CompleteResult(completion = CompletionCompletion(values = Nil))
@@ -580,11 +604,11 @@ object CompletionDef {
     * @param promptName
     *   The name of the prompt to provide completions for
     * @param handler
-    *   Function taking (argument name, current value) returning completions
+    *   Function taking (argument name, current value, context) returning completions
     */
   def forPrompt[F[_]](
       promptName: String,
-      handler: (String, String) => F[CompletionCompletion]
+      handler: (String, String, Option[CompletionContext]) => F[CompletionCompletion]
   ): CompletionDef[F] =
     CompletionDef(
       ref = CompletionReference.Prompt(name = promptName),
@@ -596,11 +620,11 @@ object CompletionDef {
     * @param uriTemplate
     *   The parsed URI template (use UriTemplate.parse to create)
     * @param handler
-    *   Function taking (variable name, current value) returning completions
+    *   Function taking (variable name, current value, context) returning completions
     */
   def forResourceTemplate[F[_]](
       uriTemplate: UriTemplate,
-      handler: (String, String) => F[CompletionCompletion]
+      handler: (String, String, Option[CompletionContext]) => F[CompletionCompletion]
   ): CompletionDef[F] =
     CompletionDef(
       ref = CompletionReference.ResourceTemplate(uri = uriTemplate.template),

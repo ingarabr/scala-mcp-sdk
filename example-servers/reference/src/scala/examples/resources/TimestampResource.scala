@@ -36,10 +36,12 @@ object TimestampResource {
       mimeType = Some("application/json"),
       handler = _ =>
         Clock[F].realTimeInstant.map { now =>
-          TimestampData(
-            timestamp = now.toString,
-            epochMillis = now.toEpochMilli,
-            message = s"Server time as of ${now}"
+          Some(
+            TimestampData(
+              timestamp = now.toString,
+              epochMillis = now.toEpochMilli,
+              message = s"Server time as of ${now}"
+            )
           )
         },
       updates = fs2.Stream.awakeEvery[F](1.minute).void

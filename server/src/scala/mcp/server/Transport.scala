@@ -5,7 +5,7 @@ import cats.effect.syntax.temporal.*
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.JsonObject
-import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse, RequestId}
+import mcp.protocol.{ErrorData, JsonRpcRequest, JsonRpcResponse, McpError, RequestId}
 
 import java.util.UUID
 import scala.concurrent.duration.*
@@ -75,7 +75,7 @@ object Transport {
       _ <- doSend(requestId)
       result <- deferred.get.timeout(30.seconds).handleErrorWith { _ =>
         pendingRequests.update(_ - requestId) *>
-          Async[F].pure(Left(ErrorData(code = Constants.INTERNAL_ERROR, message = "Request timeout or error")))
+          Async[F].pure(Left(McpError.internalError("Request timeout or error")))
       }
       _ <- pendingRequests.update(_ - requestId)
     } yield result

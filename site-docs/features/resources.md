@@ -39,7 +39,7 @@ def configResource[F[_]: Async]: ResourceDef[F, ServerConfig] =
     name = "Server Configuration",
     description = Some("Current server configuration"),
     mimeType = Some("application/json"),
-    handler = _ => Async[F].pure(ServerConfig("my-server", "1.0.0", "production"))
+    handler = _ => Async[F].pure(Some(ServerConfig("my-server", "1.0.0", "production")))
   )
 ```
 
@@ -84,7 +84,7 @@ def logsResource[F[_]: Async]: ResourceDef[F, String] =
       audience = Some(List(Role.user, Role.assistant)),
       priority = Some(0.8)
     )),
-    handler = _ => Async[F].pure("Error log content...")
+    handler = _ => Async[F].pure(Some("Error log content..."))
   )
 ```
 
@@ -99,14 +99,21 @@ The handler returns your typed data, which is automatically serialized:
 
 ```scala
 // Text resource - uses Circe encoding
-ResourceDef[F, Config](uri = "...", name = "...", handler = _ => Async[F].pure(Config(...)))
+ResourceDef[F, Config](uri = "...", name = "...", handler = _ => Async[F].pure(Some(Config(...))))
 
 // For binary data, set encoding to Binary
 ResourceDef[F, Array[Byte]](
   uri = "...",
   name = "...",
   encoding = ResourceEncoding.Binary,
-  handler = _ => Async[F].pure(imageBytes)
+  handler = _ => Async[F].pure(Some(imageBytes))
+)
+
+// Return None to signal the resource doesn't exist (returns -32002 error)
+ResourceDef[F, String](
+  uri = "...",
+  name = "...",
+  handler = _ => Async[F].pure(None)
 )
 ```
 

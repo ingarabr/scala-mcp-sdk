@@ -171,7 +171,9 @@ case class CallToolRequest(
     /** The name of the tool to call. */
     name: String,
     /** Arguments to pass to the tool. */
-    arguments: Option[JsonObject] = None
+    arguments: Option[JsonObject] = None,
+    /** Protocol-defined metadata including progressToken. */
+    _meta: Option[JsonObject] = None
 ) derives Codec.AsObject
 
 /** The server's response to a tools/call request.
@@ -409,7 +411,16 @@ object CompletionReference {
   */
 case class CompleteRequest(
     ref: CompletionReference,
-    argument: CompletionArgument
+    argument: CompletionArgument,
+    /** Additional context for multi-argument completion: values of other arguments already provided. */
+    context: Option[CompletionContext] = None
+) derives Codec.AsObject
+
+/** Context for multi-argument completion, providing values of other arguments already filled in.
+  */
+case class CompletionContext(
+    /** Previously provided argument values, keyed by argument name. */
+    arguments: Option[Map[String, String]] = None
 ) derives Codec.AsObject
 
 /** Describes an argument being completed.

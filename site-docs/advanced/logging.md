@@ -84,7 +84,7 @@ def configResource[F[_]: Async]: ResourceDef[F, Config] =
     name = "App Config",
     handler = ctx => {
       ctx.log(LoggingLevel.info, Json.fromString("Config accessed")) *>
-        Async[F].pure(Config("production"))
+        Async[F].pure(Some(Config("production")))
     }
   )
 ```

@@ -28,9 +28,11 @@ object StaticTextResource {
       annotations = Some(Annotations(priority = Some(0.8))),
       handler = _ =>
         Async[F].delay {
-          TextContent(
-            message = "This is a static text resource from the Everything server",
-            timestamp = Instant.now().toString
+          Some(
+            TextContent(
+              message = "This is a static text resource from the Everything server",
+              timestamp = Instant.now().toString
+            )
           )
         }
     )
@@ -49,7 +51,7 @@ object StaticBlobResource {
       handler = _ =>
         Async[F].delay {
           val timestamp = Instant.now().toString
-          s"Binary content created at $timestamp".getBytes("UTF-8")
+          Some(s"Binary content created at $timestamp".getBytes("UTF-8"))
         }
     )
 }

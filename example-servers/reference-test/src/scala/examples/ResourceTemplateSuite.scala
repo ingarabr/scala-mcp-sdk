@@ -116,7 +116,7 @@ class ResourceTemplateSuite extends CatsEffectSuite {
                   uri = s"file:///$path",
                   name = path,
                   description = Some(s"File: $path"),
-                  handler = _ => IO.pure(FileContent(path, content))
+                  handler = _ => IO.pure(Some(FileContent(path, content)))
                 )
               )
             )
@@ -142,7 +142,7 @@ class ResourceTemplateSuite extends CatsEffectSuite {
             ResourceDef[IO, Map[String, String]](
               uri = s"config:///$section",
               name = s"Config: $section",
-              handler = _ => IO.pure(config)
+              handler = _ => IO.pure(Some(config))
             )(using Encoder.encodeMap[String, String])
           )
         )
@@ -251,7 +251,7 @@ class ResourceTemplateSuite extends CatsEffectSuite {
     val staticResource = ResourceDef[IO, String](
       uri = "file:///static.txt",
       name = "Static File",
-      handler = _ => IO.pure("Static content - should be returned")
+      handler = _ => IO.pure(Some("Static content - should be returned"))
     )
 
     val serverResource = McpServer[IO](

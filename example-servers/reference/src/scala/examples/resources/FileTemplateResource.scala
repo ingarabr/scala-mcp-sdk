@@ -155,7 +155,7 @@ object FileTemplateResource {
                           description = Some(s"File contents of $path"),
                           mimeType = Some(fileData.mimeType),
                           size = Some(fileData.size),
-                          handler = _ => Async[F].pure(fileData.content)
+                          handler = _ => Async[F].pure(Some(fileData.content))
                         )(using Encoder.encodeString)
                       )
                     )

@@ -41,10 +41,12 @@ object DynamicTextResourceTemplate {
         mimeType = Some("application/json"),
         handler = _ =>
           Async[F].delay {
-            DynamicTextContent(
-              resourceId = id,
-              message = s"This is dynamic text resource $id",
-              timestamp = Instant.now().toString
+            Some(
+              DynamicTextContent(
+                resourceId = id,
+                message = s"This is dynamic text resource $id",
+                timestamp = Instant.now().toString
+              )
             )
           }
       )
@@ -77,7 +79,7 @@ object DynamicBlobResourceTemplate {
         handler = _ =>
           Async[F].delay {
             val timestamp = Instant.now().toString
-            s"Resource $id: This is a base64 blob created at $timestamp".getBytes("UTF-8")
+            Some(s"Resource $id: This is a base64 blob created at $timestamp".getBytes("UTF-8"))
           }
       )
     }

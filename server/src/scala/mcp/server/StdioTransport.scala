@@ -10,7 +10,7 @@ import fs2.text
 import io.circe.{Json, JsonObject}
 import io.circe.parser.*
 import io.circe.syntax.*
-import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse, RequestId}
+import mcp.protocol.{Constants, ErrorData, JsonRpcRequest, JsonRpcResponse, McpError, RequestId}
 
 /** Transport implementation using standard input/output.
   *
@@ -112,11 +112,7 @@ object StdioTransport {
                         JsonRpcResponse.Error(
                           jsonrpc = Constants.JSONRPC_VERSION,
                           id = None,
-                          error = ErrorData(
-                            code = Constants.INVALID_REQUEST,
-                            message = "Invalid Request",
-                            data = Some(Json.fromString(decodeError.getMessage))
-                          )
+                          error = McpError.invalidRequest("Invalid Request", Some(Json.fromString(decodeError.getMessage)))
                         )
                       )
                   }
@@ -127,11 +123,7 @@ object StdioTransport {
                 JsonRpcResponse.Error(
                   jsonrpc = Constants.JSONRPC_VERSION,
                   id = None,
-                  error = ErrorData(
-                    code = Constants.PARSE_ERROR,
-                    message = "Parse error",
-                    data = Some(Json.fromString(parseError.getMessage))
-                  )
+                  error = McpError.parseError("Parse error", Some(Json.fromString(parseError.getMessage)))
                 )
               )
           }

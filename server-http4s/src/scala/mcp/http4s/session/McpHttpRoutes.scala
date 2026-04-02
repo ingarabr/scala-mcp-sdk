@@ -5,7 +5,7 @@ import cats.syntax.all.*
 import fs2.Stream
 import io.circe.*
 import io.circe.syntax.*
-import mcp.protocol.{Constants, ErrorData, InitializeRequest, JsonRpcRequest, JsonRpcResponse, RequestId}
+import mcp.protocol.{Constants, ErrorData, InitializeRequest, JsonRpcRequest, JsonRpcResponse, McpError, RequestId}
 import mcp.server.McpServer
 import org.http4s.*
 import org.http4s.circe.*
@@ -71,7 +71,7 @@ object McpHttpRoutes {
       case req @ POST -> Root =>
         extractHeaders(req) match {
           case Left(error) =>
-            jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
+            jsonRpcError[F](None, McpError.invalidRequest(error))
 
           case Right(headers) =>
             val sessionId = if enableSessions then headers.sessionId else None
@@ -82,14 +82,14 @@ object McpHttpRoutes {
                     for {
                       response <- validateProtocolVersion(headers) match {
                         case Some(error) =>
-                          jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
+                          jsonRpcError[F](None, McpError.invalidRequest(error))
                         case None =>
                           sessionManager.updateActivity(Some(id)) >>
                             handlePostMessage(req, Some(id), sessionManager)
                       }
                     } yield response
                   case None =>
-                    jsonRpcError[F](None, Constants.INVALID_REQUEST, "Session expired or invalid")
+                    jsonRpcError[F](None, McpError.invalidRequest("Session expired or invalid"))
                 }
 
               case None =>
@@ -102,7 +102,7 @@ object McpHttpRoutes {
       case req @ GET -> Root =>
         extractHeaders(req) match {
           case Left(error) =>
-            jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
+            jsonRpcError[F](None, McpError.invalidRequest(error))
 
           case Right(headers) =>
             val sessionId = if enableSessions then headers.sessionId else None
@@ -111,7 +111,7 @@ object McpHttpRoutes {
                 for {
                   response <- validateProtocolVersion(headers) match {
                     case Some(error) =>
-                      jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
+                      jsonRpcError[F](None, McpError.invalidRequest(error))
                     case None =>
                       createPersistentJsonStream(sessionId, headers.lastEventId, sessionManager)
                   }
@@ -128,15 +128,15 @@ object McpHttpRoutes {
                       }
                     }
                   } yield response
-                else if sessionId.isDefined then jsonRpcError[F](None, Constants.INVALID_REQUEST, "Session expired")
-                else jsonRpcError[F](None, Constants.INVALID_REQUEST, "Missing Mcp-Session-Id header")
+                else if sessionId.isDefined then jsonRpcError[F](None, McpError.invalidRequest("Session expired"))
+                else jsonRpcError[F](None, McpError.invalidRequest("Missing Mcp-Session-Id header"))
             }
         }
 
       case req @ DELETE -> Root =>
         extractHeaders(req) match {
           case Left(error) =>
-            jsonRpcError[F](None, Constants.INVALID_REQUEST, error)
+            jsonRpcError[F](None, McpError.invalidRequest(error))
 
           case Right(headers) =>
             headers.sessionId match {
@@ -145,10 +145,10 @@ object McpHttpRoutes {
                   case Right(_) =>
                     Ok(Json.obj("status" -> Json.fromString("session_terminated")).deepDropNullValues.noSpaces)
                   case Left(error) =>
-                    jsonRpcError[F](None, Constants.INTERNAL_ERROR, s"Failed to remove session: ${error.getMessage}")
+                    jsonRpcError[F](None, McpError.internalError(s"Failed to remove session: ${error.getMessage}"))
                 }
               case None =>
-                jsonRpcError[F](None, Constants.INVALID_REQUEST, "Missing Mcp-Session-Id header")
+                jsonRpcError[F](None, McpError.invalidRequest("Missing Mcp-Session-Id header"))
             }
         }
     }
@@ -181,15 +181,20 @@ object McpHttpRoutes {
     else Right(RequestHeaders(sessionId, protocolVersion, lastEventId, accept))
   }
 
-  /** Validate protocol version header (required after initialize). */
-  private def validateProtocolVersion[F[_]: Async](headers: RequestHeaders): Option[String] =
+  /** Validate protocol version header.
+    *
+    * @param requireVersion
+    *   If true (post-initialization), the header is required. If false (initialize request), it's optional.
+    */
+  private def validateProtocolVersion[F[_]: Async](headers: RequestHeaders, requireVersion: Boolean = true): Option[String] =
     headers.protocolVersion match {
       case Some(version) if version == Constants.LATEST_PROTOCOL_VERSION =>
         None
       case Some(version) =>
         Some(s"Unsupported protocol version: $version. Expected ${Constants.LATEST_PROTOCOL_VERSION}")
+      case None if requireVersion =>
+        Some(s"Missing required MCP-Protocol-Version header. Expected ${Constants.LATEST_PROTOCOL_VERSION}")
       case None =>
-        // First request (initialize) may not have version
         None
     }
 
@@ -285,7 +290,7 @@ object McpHttpRoutes {
           case Right(json) => json.hcursor.get[RequestId]("id").toOption
           case Left(_)     => None
         }
-        response <- jsonRpcError[F](requestId, -32603, s"Internal error: ${error.getMessage}")
+        response <- jsonRpcError[F](requestId, McpError.internalError(s"Internal error: ${error.getMessage}"))
       } yield response
     }
   }
@@ -355,7 +360,7 @@ object McpHttpRoutes {
           case Right(json) => json.hcursor.get[RequestId]("id").toOption
           case Left(_)     => None
         }
-        response <- jsonRpcError[F](requestId, -32603, s"Internal error: ${error.getMessage}")
+        response <- jsonRpcError[F](requestId, McpError.internalError(s"Internal error: ${error.getMessage}"))
       } yield response
     }
   }
@@ -396,14 +401,13 @@ object McpHttpRoutes {
         )
 
       case None =>
-        jsonRpcError[F](None, Constants.INVALID_REQUEST, "Session not found")
+        jsonRpcError[F](None, McpError.invalidRequest("Session not found"))
     }
   }
 
   private def jsonRpcError[F[_]: Async](
       requestId: Option[RequestId],
-      code: Int,
-      message: String
+      error: ErrorData
   ): F[Response[F]] = {
     val dsl = new Http4sDsl[F] {}
     import dsl.*
@@ -411,7 +415,7 @@ object McpHttpRoutes {
     val errorResponse = JsonRpcResponse.Error(
       jsonrpc = Constants.JSONRPC_VERSION,
       id = requestId,
-      error = ErrorData(code = code, message = message)
+      error = error
     )
 
     val data = errorResponse.asJson.deepDropNullValues.noSpaces

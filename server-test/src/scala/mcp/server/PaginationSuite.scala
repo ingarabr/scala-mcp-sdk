@@ -66,7 +66,7 @@ class PaginationSuite extends FunSuite {
 
     assert(result.isLeft)
     val error = result.swap.toOption.get
-    assertEquals(error.code, Constants.INVALID_PARAMS)
+    assertEquals(error.code, -32602)
     assert(error.message.contains("Invalid cursor format"))
   }
 
@@ -79,7 +79,7 @@ class PaginationSuite extends FunSuite {
     val result = Paginator.paginate(testItems, cursor, config, _.id)
     assert(result.isLeft)
     val error = result.swap.toOption.get
-    assertEquals(error.code, Constants.INVALID_PARAMS)
+    assertEquals(error.code, -32602)
     assert(error.message.contains("Cursor expired"))
   }
 
@@ -91,7 +91,7 @@ class PaginationSuite extends FunSuite {
     val result = Paginator.paginate(testItems, cursor, config, _.id)
     assert(result.isLeft)
     val error = result.swap.toOption.get
-    assertEquals(error.code, Constants.INVALID_PARAMS)
+    assertEquals(error.code, -32602)
     assert(error.message.contains("out of bounds"))
   }
 
