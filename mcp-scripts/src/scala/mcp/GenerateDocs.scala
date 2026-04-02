@@ -60,6 +60,9 @@ object GenerateDocs extends BleepScript("Docs") {
 
     val env = sys.env.collect {
       case x @ ("SSH_AUTH_SOCK", _) => x
+      case x @ ("GIT_USER", _)     => x
+      case x @ ("GH_TOKEN", _)     => x
+      case x @ ("USE_SSH", _)      => x
       case ("PATH", value)          => "PATH" -> s"$nodeBinPath${File.pathSeparator}$value"
     }.toList
 

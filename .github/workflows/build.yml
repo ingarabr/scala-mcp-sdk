@@ -73,6 +73,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           bleep docs deploy
         env:
+          USE_SSH: "false"
           GIT_USER: git
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
