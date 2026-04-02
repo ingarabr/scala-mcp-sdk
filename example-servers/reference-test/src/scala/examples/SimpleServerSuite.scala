@@ -9,7 +9,7 @@ import io.circe.parser.*
 import mcp.protocol.*
 import mcp.server.{McpServer, Transport}
 import munit.CatsEffectSuite
-import examples.tools.{AddTool, EchoTool}
+import examples.tools.{AddTool, EchoTool, PingTool}
 import examples.resources.ServerConfigResource
 import examples.prompts.GreetingPrompt
 import cats.effect.Resource
@@ -253,6 +253,35 @@ class SimpleServerSuite extends CatsEffectSuite {
                 assert(callResult.content.nonEmpty, "Should have content")
                 val textContent = callResult.content.head.asInstanceOf[Content.Text].text
                 assert(textContent.contains("Echo: Hello, MCP!"), s"Output should contain echoed message, got: $textContent")
+              case None =>
+                fail(s"Failed to decode CallToolResult from: $result")
+            }
+
+          case other =>
+            fail(s"Expected Response, got: $other")
+        }
+      } yield ()
+    }
+  }
+
+  test("tools/call ping (no-args tool) should work correctly") {
+    withServer(
+      McpServer[IO](info = Implementation("test-server", "1.0.0"), tools = List(PingTool[IO]))
+    ) { (serverToClient, clientToServer) =>
+      val callRequest = CallToolRequest(name = "ping")
+      for {
+        _ <- initializeServer(clientToServer, serverToClient)
+        response <- sendRequest(clientToServer, serverToClient, "tools/call", Some(callRequest.asJsonObject))
+
+        _ = response match {
+          case JsonRpcResponse.Response(_, _, result) =>
+            val toolResult = result.asJson.as[CallToolResult]
+            assert(toolResult.isRight, s"Failed to decode CallToolResult: $toolResult")
+            toolResult.toOption match {
+              case Some(callResult) =>
+                assertEquals(callResult.isError, Some(false))
+                val textContent = callResult.content.head.asInstanceOf[Content.Text].text
+                assertEquals(textContent, "pong")
               case None =>
                 fail(s"Failed to decode CallToolResult from: $result")
             }

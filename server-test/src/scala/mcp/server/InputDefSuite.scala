@@ -463,6 +463,27 @@ class InputDefSuite extends FunSuite {
   }
 
   // ===========================================================================
+  // Unit InputSchema (no-args tools)
+  // ===========================================================================
+
+  test("Unit: produces empty object schema") {
+    val schema = summon[InputSchema[Unit]]
+    assertEquals(schema.jsonSchema, ObjectSchema())
+  }
+
+  test("Unit: decoder accepts empty object") {
+    val schema = summon[InputSchema[Unit]]
+    val result = Json.obj().as(using schema.decoder)
+    assert(result.isRight)
+  }
+
+  test("Unit: decoder accepts object with extra fields") {
+    val schema = summon[InputSchema[Unit]]
+    val result = Json.obj("unexpected" -> Json.fromString("value")).as(using schema.decoder)
+    assert(result.isRight)
+  }
+
+  // ===========================================================================
   // InputField with title and default
   // ===========================================================================
 

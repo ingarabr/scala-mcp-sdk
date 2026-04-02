@@ -58,6 +58,25 @@ import mcp.server.McpServer
 // )
 ```
 
+## No-Arguments Tools
+
+For tools that don't take any input, use `Unit` as the input type:
+
+```scala mdoc:compile-only
+import cats.effect.IO
+import mcp.protocol.Content
+import mcp.server.ToolDef
+
+val pingTool = ToolDef.unstructured[IO, Unit](
+  name = "ping",
+  description = Some("Check if the server is alive")
+) { (_, _) =>
+  IO.pure(List(Content.Text("pong")))
+}
+```
+
+A built-in `InputSchema[Unit]` is provided that produces an empty object schema (`{ "type": "object" }`).
+
 ## Input Schema
 
 Schemas are defined using `InputField` descriptors and `InputDef`. The `InputDef` is resolved via `using` — define it as a `given`:

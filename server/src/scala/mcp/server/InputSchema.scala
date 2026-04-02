@@ -12,6 +12,15 @@ trait InputSchema[A] {
   def decoder: Decoder[A]
 }
 
+object InputSchema {
+
+  /** InputSchema for tools that take no arguments. Produces `{ "type": "object" }`. */
+  given InputSchema[Unit] with {
+    def jsonSchema: JsonSchemaType.ObjectSchema = JsonSchemaType.ObjectSchema()
+    def decoder: Decoder[Unit] = Decoder.const(())
+  }
+}
+
 /** Minimal interface providing JSON Schema and an Encoder for output types.
   *
   * This is what `ToolDef.structured` requires via `using` parameters. Satisfied by `OutputDef[A]`.
