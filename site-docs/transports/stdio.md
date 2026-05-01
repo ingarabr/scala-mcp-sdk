@@ -34,8 +34,8 @@ object MyServer extends IOApp.Simple {
         tools = List(echoTool)
       )
       transport <- StdioTransport[IO]()
-      _ <- server.serve(transport)
-    } yield ()).useForever
+      join <- server.serve(transport)
+    } yield join).use(identity)
   }
 }
 ```
@@ -122,8 +122,8 @@ def run: IO[Unit] = {
         tools = List(toolUsing(resources))
       )
       transport <- StdioTransport[IO]()
-      _ <- server.serve(transport)
-    } yield ()).useForever
+      join <- server.serve(transport)
+    } yield join).use(identity)
   }
 }
 ```

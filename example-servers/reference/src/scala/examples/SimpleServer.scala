@@ -30,6 +30,6 @@ object SimpleServer extends IOApp.Simple {
         completions = List(LanguageCompletion[IO])
       )
       transport <- StdioTransport[IO]()
-      _ <- server.serve(transport)
-    } yield ()).useForever
+      join <- server.serve(transport)
+    } yield join).use(identity)
 }

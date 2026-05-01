@@ -36,9 +36,9 @@ import scala.concurrent.duration.*
   *   tools = List(echoTool),
   *   resources = List(configResource),
   *   prompts = Nil
-  * ).use { server =>
-  *   StdioTransport[IO]().use(transport => server.serve(transport))
-  * }
+  * ).flatMap { server =>
+  *   StdioTransport[IO]().flatMap(server.serve)
+  * }.use(identity)
   * }}}
   */
 trait McpServer[F[_]] {
@@ -51,14 +51,17 @@ trait McpServer[F[_]] {
     *   - Send responses back through the transport
     *   - Handle the initialization handshake
     *
-    * The returned Resource manages the server's lifecycle
+    * The returned Resource manages the server's lifecycle. Its inner value is an `F[Unit]` that completes when the message-processing fiber
+    * finishes naturally (e.g. on stdin EOF) or fails. Block on it with `.use(identity)` to keep the server running until the transport
+    * closes; releasing the resource at any point runs the graceful shutdown path (shutdown state, cancel in-flight requests, await tasks,
+    * cancel the fiber).
     *
     * @param transport
     *   The transport to use for communication
     * @return
-    *   Resource that manages the server lifecycle
+    *   Resource whose value awaits natural fiber completion
     */
-  def serve(transport: Transport[F]): CatsResource[F, Unit]
+  def serve(transport: Transport[F]): CatsResource[F, F[Unit]]
 
   /** Get the server's capabilities based on registered primitives */
   def capabilities: ServerCapabilities
@@ -269,7 +272,7 @@ private class McpServerImpl[F[_]: Async](
         else Async[F].unit
     } yield ()
 
-  def serve(transport: Transport[F]): CatsResource[F, Unit] = {
+  def serve(transport: Transport[F]): CatsResource[F, F[Unit]] = {
     // Main message handling stream
     val messageStream = transport.receive
       .evalMap(handleMessage(_, transport))
@@ -287,8 +290,8 @@ private class McpServerImpl[F[_]: Async](
         // Acquire: set transport, start resource update streams, start message processing
         activeTransport.set(Some(transport)) *>
           startResourceUpdateStreams *>
-          Async[F].start(combinedStream.compile.drain).map(_.cancel)
-      ) { cancelStream =>
+          Async[F].start(combinedStream.compile.drain)
+      ) { fiber =>
         // Release: graceful shutdown
         for {
           // 1. Transition to Shutdown state - prevents new requests from being processed
@@ -301,14 +304,14 @@ private class McpServerImpl[F[_]: Async](
           // 3. Wait for running tasks with hard timeout (if tasks enabled)
           _ <- taskRegistry.traverse_(registry => registry.awaitAllTasks(shutdownTimeout))
 
-          // 4. Cancel the message processing stream
-          _ <- cancelStream
+          // 4. Cancel the message processing fiber (no-op if it already finished)
+          _ <- fiber.cancel
 
           // 5. Clear the transport reference
           _ <- activeTransport.set(None)
         } yield ()
       }
-      .void
+      .map(_.joinWithNever.void)
   }
 
   /** Handle an incoming JSON-RPC request and optionally generate a response.

@@ -75,8 +75,8 @@ object MyServer extends IOApp.Simple {
         tools = List(greetTool)
       )
       transport <- StdioTransport[IO]()
-      _ <- server.serve(transport)
-    } yield ()).useForever
+      join <- server.serve(transport)
+    } yield join).use(identity)
   }
 }
 ```
@@ -87,8 +87,8 @@ object MyServer extends IOApp.Simple {
 2. **`ToolDef.unstructured`** - Creates a tool that returns raw content (resolves `InputDef` via `using`)
 3. **`McpServer[IO](...)`** - Creates a server resource with your primitives
 4. **`StdioTransport[IO]()`** - Creates a stdio transport resource
-5. **`server.serve(transport)`** - Connects them together
-6. **`.useForever`** - Runs until interrupted
+5. **`server.serve(transport)`** - Starts the server, yielding an `F[Unit]` that completes when the transport closes (e.g. stdin EOF)
+6. **`.use(identity)`** - Runs the join action; when it returns, resource finalizers run graceful shutdown
 
 ## Running Your Server
 

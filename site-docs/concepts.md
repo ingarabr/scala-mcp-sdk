@@ -29,8 +29,8 @@ Think of `IO` as a recipe. `IO.pure(x)` is a recipe that just returns `x`. Other
 (for {
   server    <- McpServer[IO](...)    // acquired, will be cleaned up
   transport <- StdioTransport[IO]()  // acquired, will be cleaned up
-  _         <- server.serve(transport)
-} yield ()).useForever  // .useForever keeps it running until interrupted
+  join      <- server.serve(transport)
+} yield join).use(identity)  // blocks until the transport closes (e.g. stdin EOF)
 ```
 
 ## `for`/`yield` — Sequencing Steps
